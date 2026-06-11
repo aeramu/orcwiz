@@ -78,7 +78,7 @@ impl Runner {
 
         let mut child = Command::new("opencode")
             .arg("run")
-            .arg("--skill")
+            .arg("--file")
             .arg(&skill_path)
             .arg(&prompt)
             .current_dir(project_path)
