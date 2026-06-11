@@ -12,7 +12,8 @@ pub struct LinearIssue {
 
 #[derive(Debug, Deserialize)]
 struct GraphQlResponse {
-    data: GraphQlData,
+    data: Option<GraphQlData>,
+    errors: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,9 +69,22 @@ impl LinearClient {
             .await?;
 
         let body = res.text().await?;
-        let parsed: GraphQlResponse = serde_json::from_str(&body)?;
+        let parsed: GraphQlResponse = match serde_json::from_str(&body) {
+            Ok(p) => p,
+            Err(e) => {
+                return Err(format!("Failed to parse response: {}. Body: {}", e, body).into());
+            }
+        };
 
-        Ok(parsed.data.viewer.assigned_issues.nodes)
+        if let Some(errors) = parsed.errors {
+            return Err(format!("GraphQL API returned errors: {:?}", errors).into());
+        }
+
+        if let Some(data) = parsed.data {
+            Ok(data.viewer.assigned_issues.nodes)
+        } else {
+            Err(format!("No data returned from Linear. Body: {}", body).into())
+        }
     }
 
     // In a full implementation we would use a mutation to change the state.

@@ -73,8 +73,13 @@ impl Runner {
 
         info!("Running opencode for task: {}", title);
 
+        let home = directories::UserDirs::new().unwrap().home_dir().to_path_buf();
+        let skill_path = home.join(".config/orcwiz/skills/orchestrator.md");
+
         let mut child = Command::new("opencode")
             .arg("run")
+            .arg("--skill")
+            .arg(&skill_path)
             .arg(&prompt)
             .current_dir(project_path)
             .stdout(Stdio::piped())
