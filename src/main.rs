@@ -67,47 +67,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             tokio::spawn(async move {
                 loop {
                     info!("Polling Linear for new tasks...");
-                    match linear_client.fetch_todo_tasks().await {
-                        Ok(tasks) => {
-                            for task in tasks {
-                                match db_clone.is_task_processed(&task.id) {
-                                    Ok(processed) => {
-                                        if !processed {
-                                            info!("Found new task: {}", task.title);
-                                            let desc = task.description.as_deref().unwrap_or("");
-                                            
-                                            // Prepare project
-                                            let project_path = match runner.prepare_project(desc).await {
-                                                Ok(p) => p,
-                                                Err(e) => {
-                                                    error!("Failed to prepare project for task {}: {}", task.id, e);
-                                                    continue;
-                                                }
-                                            };
+                    let tasks = match linear_client.fetch_todo_tasks().await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            error!("Failed to fetch tasks from Linear: {}", e);
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                            continue;
+                        }
+                    };
 
-                                            let session_db_id = db_clone.insert_session(&task.id, &project_path.to_string_lossy()).unwrap();
-                                            
-                                            // Run opencode
-                                            match runner.run_opencode(&project_path, &task.title, desc).await {
-                                                Ok(session_id) => {
-                                                    if let Some(sid) = session_id {
-                                                        info!("opencode session created: {}", sid);
-                                                        let _ = db_clone.update_session_id(session_db_id, &sid);
-                                                    }
-                                                    let _ = db_clone.update_status(session_db_id, "completed");
-                                                }
-                                                Err(e) => {
-                                                    error!("Failed to run opencode for task {}: {}", task.id, e);
-                                                    let _ = db_clone.update_status(session_db_id, "failed");
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => error!("DB error checking task: {}", e),
+                    for task in tasks {
+                        match db_clone.is_task_processed(&task.id) {
+                            Ok(true) => continue,
+                            Err(e) => {
+                                error!("DB error checking task: {}", e);
+                                continue;
+                            }
+                            Ok(false) => {}
+                        }
+
+                        info!("Found new task: {}", task.title);
+                        let desc = task.description.as_deref().unwrap_or("");
+                        
+                        // Prepare project
+                        let project_path = match runner.prepare_project(desc).await {
+                            Ok(p) => p,
+                            Err(e) => {
+                                error!("Failed to prepare project for task {}: {}", task.id, e);
+                                continue;
+                            }
+                        };
+
+                        let session_db_id = db_clone.insert_session(&task.id, &project_path.to_string_lossy()).unwrap();
+                        
+                        // Run opencode
+                        match runner.run_opencode(&project_path, &task.title, desc).await {
+                            Ok(session_id) => {
+                                if let Some(sid) = session_id {
+                                    info!("opencode session created: {}", sid);
+                                    let _ = db_clone.update_session_id(session_db_id, &sid);
                                 }
+                                let _ = db_clone.update_status(session_db_id, "completed");
+                            }
+                            Err(e) => {
+                                error!("Failed to run opencode for task {}: {}", task.id, e);
+                                let _ = db_clone.update_status(session_db_id, "failed");
                             }
                         }
-                        Err(e) => error!("Failed to fetch tasks from Linear: {}", e),
                     }
                     tokio::time::sleep(Duration::from_secs(60)).await;
                 }
