@@ -1,5 +1,6 @@
 use axum::{
     extract::{Path, State},
+    response::IntoResponse,
     routing::{get, post, put},
     Router, Json,
 };
@@ -19,6 +20,7 @@ pub async fn start_server(db: Arc<Db>, port: u16) {
 
     let api_routes = Router::new()
         .route("/tasks", get(list_tasks).post(add_task))
+        .route("/tasks/:id", get(get_task))
         .route("/tasks/:id/status", put(update_status))
         .route("/tasks/:id/run", post(run_task));
 
@@ -38,6 +40,17 @@ pub async fn start_server(db: Arc<Db>, port: u16) {
 async fn list_tasks(State(state): State<Arc<AppState>>) -> Json<Vec<crate::db::Task>> {
     let tasks = state.db.list_tasks().unwrap_or_default();
     Json(tasks)
+}
+
+async fn get_task(
+    Path(id): Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Response {
+    match state.db.get_task(id) {
+        Ok(Some(task)) => Json(task).into_response(),
+        Ok(None) => (axum::http::StatusCode::NOT_FOUND, "Task not found").into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 #[derive(Deserialize)]
