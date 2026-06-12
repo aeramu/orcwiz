@@ -48,6 +48,6 @@ impl Config {
 
     pub fn path() -> PathBuf {
         let base_dirs = directories::BaseDirs::new().expect("Failed to get base dirs");
-        base_dirs.config_dir().join("orcwiz").join("config.json")
+        base_dirs.home_dir().join(".config").join("orcwiz").join("config.json")
     }
 }
