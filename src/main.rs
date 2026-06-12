@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let config = config::Config::load();
             let db = Arc::new(db::Db::new()?);
             let linear_client = Arc::new(linear::LinearClient::new(config.linear_api_key.clone()));
-            let runner = Arc::new(runner::Runner::new(config.projects_dir.clone()));
+            let runner = Arc::new(runner::Runner::new(config.projects_dir.clone(), config.opencode_server_url.clone()));
 
             info!("Starting Orcwiz Orchestrator on port {}", config.port);
 

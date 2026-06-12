@@ -1,15 +1,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
-use tracing::{info, warn, error};
+use tracing::{info, warn};
 
 pub struct Runner {
     projects_dir: PathBuf,
+    opencode_server_url: Option<String>,
 }
 
 impl Runner {
-    pub fn new(projects_dir: PathBuf) -> Self {
-        Self { projects_dir }
+    pub fn new(projects_dir: PathBuf, opencode_server_url: Option<String>) -> Self {
+        Self { projects_dir, opencode_server_url }
     }
 
     pub async fn prepare_project(&self, description: &str) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
@@ -73,14 +74,29 @@ impl Runner {
 
         info!("Running opencode for task: {}", title);
 
-        let home = directories::UserDirs::new().unwrap().home_dir().to_path_buf();
-        let skill_path = home.join(".config/orcwiz/skills/orchestrator.md");
+        let mut cmd = Command::new("opencode");
+        cmd.arg("run").arg(&prompt);
 
-        let mut child = Command::new("opencode")
-            .arg("run")
-            .arg("--file")
-            .arg(&skill_path)
-            .arg(&prompt)
+        if let Some(ref server_url) = self.opencode_server_url {
+            info!("Checking if opencode server at {} is running...", server_url);
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(500))
+                .build();
+            
+            if let Ok(client) = client {
+                match client.get(server_url).send().await {
+                    Ok(_) => {
+                        info!("opencode server is running at {}. Attaching to it.", server_url);
+                        cmd.arg("--attach").arg(server_url);
+                    }
+                    Err(e) => {
+                        warn!("opencode server at {} is not reachable: {}. Running locally.", server_url, e);
+                    }
+                }
+            }
+        }
+
+        let child = cmd
             .current_dir(project_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

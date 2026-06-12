@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
@@ -10,6 +10,8 @@ pub struct Config {
     pub port: u16,
     // Linear team ID or query to poll
     pub linear_team_id: Option<String>,
+    #[serde(default)]
+    pub opencode_server_url: Option<String>,
 }
 
 fn default_port() -> u16 {
@@ -27,6 +29,7 @@ impl Config {
                     .unwrap_or_else(|| PathBuf::from("./dev")),
                 port: 3000,
                 linear_team_id: None,
+                opencode_server_url: Some("http://localhost:4096".to_string()),
             };
             if let Some(parent) = config_path.parent() {
                 fs::create_dir_all(parent).unwrap();
