@@ -4,12 +4,44 @@ use axum::{
     routing::{get, post, put},
     Router, Json,
 };
+use rust_embed::RustEmbed;
 use serde::Deserialize;
 use std::sync::Arc;
-use tower_http::services::ServeDir;
 use tower_http::cors::CorsLayer;
 
 use crate::db::Db;
+
+#[derive(RustEmbed)]
+#[folder = "web/dist/"]
+struct Asset;
+
+async fn static_handler(uri: axum::http::Uri) -> axum::response::Response {
+    let mut path = uri.path().trim_start_matches('/').to_string();
+
+    if path.is_empty() {
+        path = "index.html".to_string();
+    }
+
+    match Asset::get(path.as_str()) {
+        Some(content) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            ([(axum::http::header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+        }
+        None => {
+            if path != "index.html" {
+                match Asset::get("index.html") {
+                    Some(content) => {
+                        let mime = mime_guess::from_path("index.html").first_or_octet_stream();
+                        ([(axum::http::header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+                    }
+                    None => (axum::http::StatusCode::NOT_FOUND, "404 Not Found").into_response()
+                }
+            } else {
+                (axum::http::StatusCode::NOT_FOUND, "404 Not Found").into_response()
+            }
+        }
+    }
+}
 
 struct AppState {
     db: Arc<Db>,
@@ -26,7 +58,7 @@ pub async fn start_server(db: Arc<Db>, port: u16) {
 
     let app = Router::new()
         .nest("/api", api_routes)
-        .fallback_service(ServeDir::new("web/dist"))
+        .fallback(get(static_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

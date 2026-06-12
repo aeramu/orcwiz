@@ -19,20 +19,13 @@ Orcwiz is an in-house CLI Kanban Board and AI Agent Orchestration Tool built in 
 
 ### Build from Source
 
-First, build the SolidJS frontend:
-
-```bash
-cd web
-bun install
-bun run build
-cd ..
-```
-
-Then, compile the Rust backend:
+The Rust build script (`build.rs`) automatically runs `bun install` and `bun run build` in `web/` at compile time, then embeds the resulting static assets into the binary via `rust-embed`. You only need a single `cargo` command:
 
 ```bash
 cargo build --release
 ```
+
+Prerequisites: [Rust & Cargo](https://rustup.rs/), [Bun](https://bun.sh/), and [opencode CLI](https://opencode.ai) in your `$PATH`. If you want to skip the frontend build (e.g. for a faster Rust-only iteration), set `SKIP_WEB_BUILD=1`.
 
 ## Configuration
 
