@@ -1,16 +1,16 @@
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Session {
+pub struct Task {
     pub id: i64,
-    pub linear_task_id: String,
-    pub session_id: Option<String>,
-    pub project_path: String,
+    pub title: String,
+    pub description: Option<String>,
     pub status: String,
+    pub project_path: String,
+    pub session_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -29,13 +29,15 @@ impl Db {
 
         let conn = Connection::open(db_path)?;
         
+        // We drop the old sessions table or just create tasks table
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS sessions (
+            "CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY,
-                linear_task_id TEXT NOT NULL,
-                session_id TEXT,
-                project_path TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
                 status TEXT NOT NULL,
+                project_path TEXT NOT NULL,
+                session_id TEXT,
                 created_at TEXT NOT NULL
             )",
             [],
@@ -44,63 +46,84 @@ impl Db {
         Ok(Db { conn: Mutex::new(conn) })
     }
 
-    pub fn insert_session(&self, linear_task_id: &str, project_path: &str) -> Result<i64> {
+    pub fn add_task(&self, title: &str, project_path: &str, description: Option<&str>) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO sessions (linear_task_id, project_path, status, created_at) 
-             VALUES (?1, ?2, 'pending', ?3)",
-            params![linear_task_id, project_path, now],
+            "INSERT INTO tasks (title, description, status, project_path, created_at) 
+             VALUES (?1, ?2, 'backlog', ?3, ?4)",
+            params![title, description, project_path, now],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn update_session_id(&self, id: i64, session_id: &str) -> Result<()> {
+    pub fn update_task_session(&self, id: i64, session_id: &str) -> Result<()> {
         self.conn.lock().unwrap().execute(
-            "UPDATE sessions SET session_id = ?1, status = 'running' WHERE id = ?2",
+            "UPDATE tasks SET session_id = ?1, status = 'in_progress' WHERE id = ?2",
             params![session_id, id],
         )?;
         Ok(())
     }
 
-    pub fn update_status(&self, id: i64, status: &str) -> Result<()> {
+    pub fn update_task_status(&self, id: i64, status: &str) -> Result<()> {
         self.conn.lock().unwrap().execute(
-            "UPDATE sessions SET status = ?1 WHERE id = ?2",
+            "UPDATE tasks SET status = ?1 WHERE id = ?2",
             params![status, id],
         )?;
         Ok(())
     }
 
-    pub fn get_sessions(&self) -> Result<Vec<Session>> {
+    pub fn list_tasks(&self) -> Result<Vec<Task>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, linear_task_id, session_id, project_path, status, created_at FROM sessions ORDER BY created_at DESC")?;
-        let session_iter = stmt.query_map([], |row| {
-            let created_at_str: String = row.get(5)?;
+        let mut stmt = conn.prepare("SELECT id, title, description, status, project_path, session_id, created_at FROM tasks ORDER BY created_at ASC")?;
+        let task_iter = stmt.query_map([], |row| {
+            let created_at_str: String = row.get(6)?;
             let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
                 .unwrap_or_default()
                 .with_timezone(&Utc);
 
-            Ok(Session {
+            Ok(Task {
                 id: row.get(0)?,
-                linear_task_id: row.get(1)?,
-                session_id: row.get(2)?,
-                project_path: row.get(3)?,
-                status: row.get(4)?,
+                title: row.get(1)?,
+                description: row.get(2)?,
+                status: row.get(3)?,
+                project_path: row.get(4)?,
+                session_id: row.get(5)?,
                 created_at,
             })
         })?;
 
-        let mut sessions = Vec::new();
-        for s in session_iter {
-            sessions.push(s?);
+        let mut tasks = Vec::new();
+        for t in task_iter {
+            tasks.push(t?);
         }
-        Ok(sessions)
+        Ok(tasks)
     }
 
-    pub fn is_task_processed(&self, linear_task_id: &str) -> Result<bool> {
+    pub fn get_task(&self, id: i64) -> Result<Option<Task>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT count(1) FROM sessions WHERE linear_task_id = ?1")?;
-        let count: i64 = stmt.query_row(params![linear_task_id], |row| row.get(0))?;
-        Ok(count > 0)
+        let mut stmt = conn.prepare("SELECT id, title, description, status, project_path, session_id, created_at FROM tasks WHERE id = ?1")?;
+        let mut task_iter = stmt.query_map(params![id], |row| {
+            let created_at_str: String = row.get(6)?;
+            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                .unwrap_or_default()
+                .with_timezone(&Utc);
+
+            Ok(Task {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                description: row.get(2)?,
+                status: row.get(3)?,
+                project_path: row.get(4)?,
+                session_id: row.get(5)?,
+                created_at,
+            })
+        })?;
+
+        if let Some(t) = task_iter.next() {
+            Ok(Some(t?))
+        } else {
+            Ok(None)
+        }
     }
 }

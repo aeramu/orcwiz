@@ -4,70 +4,33 @@ use tokio::process::Command;
 use tracing::{info, warn};
 
 pub struct Runner {
-    projects_dir: PathBuf,
     opencode_server_url: Option<String>,
 }
 
 impl Runner {
-    pub fn new(projects_dir: PathBuf, opencode_server_url: Option<String>) -> Self {
-        Self { projects_dir, opencode_server_url }
+    pub fn new(opencode_server_url: Option<String>) -> Self {
+        Self { opencode_server_url }
     }
 
-    pub async fn prepare_project(&self, description: &str) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
-        // Try to find a git URL in the description
-        let git_url = description
-            .split_whitespace()
-            .find(|word| word.starts_with("git@") || word.starts_with("http") && word.ends_with(".git"));
-
-        if let Some(url) = git_url {
-            let folder_name = url.split('/').last().unwrap_or("unknown_repo").trim_end_matches(".git");
-            let project_path = self.projects_dir.join(folder_name);
-            
-            if !project_path.exists() {
-                info!("Cloning {} into {:?}", url, project_path);
-                let status = Command::new("git")
-                    .arg("clone")
-                    .arg(url)
-                    .current_dir(&self.projects_dir)
-                    .status()
-                    .await?;
-                
-                if !status.success() {
-                    return Err(format!("Failed to clone repository: {}", url).into());
-                }
-            }
-            return Ok(project_path);
+    pub async fn prepare_project(&self, project_path_str: &str) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+        let expanded = if project_path_str.starts_with("~/") {
+            let home = directories::UserDirs::new().unwrap().home_dir().to_path_buf();
+            home.join(project_path_str.trim_start_matches("~/"))
+        } else {
+            PathBuf::from(project_path_str)
+        };
+        
+        if !expanded.exists() {
+            std::fs::create_dir_all(&expanded)?;
+            info!("Created project directory at {:?}", expanded);
         }
-
-        // Try to find a local path
-        // Simple heuristic: look for something starting with / or ~/ or ./ that exists
-        let local_path_str = description
-            .split_whitespace()
-            .find(|word| word.starts_with('/') || word.starts_with("~/") || word.starts_with("./"));
-
-        if let Some(path_str) = local_path_str {
-            let expanded = if path_str.starts_with("~/") {
-                let home = directories::UserDirs::new().unwrap().home_dir().to_path_buf();
-                home.join(path_str.trim_start_matches("~/"))
-            } else {
-                PathBuf::from(path_str)
-            };
-            if expanded.exists() {
-                return Ok(expanded);
-            }
-        }
-
-        // Default: use a folder named "default_project"
-        let default_project = self.projects_dir.join("default_project");
-        if !default_project.exists() {
-            std::fs::create_dir_all(&default_project)?;
-        }
-        Ok(default_project)
+        
+        Ok(expanded)
     }
 
     pub async fn run_opencode(&self, project_path: &Path, title: &str, description: &str) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
         let prompt = format!(
-            "Task: {}\nDescription: {}\nMake sure to move the task to 'Ready to Review' when done.",
+            "Task: {}\nDescription: {}",
             title,
             description
         );
@@ -102,8 +65,6 @@ impl Runner {
             .stderr(Stdio::piped())
             .spawn()?;
 
-        // Capture stdout to extract session ID if possible
-        // opencode session ids are usually like ses_...
         let mut session_id = None;
 
         let output = child.wait_with_output().await?;
@@ -116,14 +77,12 @@ impl Runner {
             warn!("opencode stderr: {}", stderr_str);
         }
 
-        // Try to parse session id from stdout
         if let Some(idx) = stdout_str.find("ses_") {
             let end_idx = stdout_str[idx..].find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(stdout_str[idx..].len());
             session_id = Some(stdout_str[idx..idx+end_idx].to_string());
         }
 
         if session_id.is_none() {
-            // Alternatively, list sessions and get the first one
             let list_output = Command::new("opencode")
                 .arg("session")
                 .arg("list")
