@@ -33,16 +33,25 @@ When you run Orcwiz for the first time, it will generate a default configuration
 - **macOS / Linux:** `~/.config/orcwiz/config.json`
 - **Windows:** `%APPDATA%\orcwiz\config.json`
 
-Open the configuration file and set your Linear API key:
+Open the configuration file and configure the settings:
 
 ```json
 {
   "linear_api_key": "YOUR_LINEAR_API_KEY_HERE",
   "projects_dir": "/Users/your_username/dev",
   "port": 3000,
-  "linear_team_id": null
+  "linear_team_id": null,
+  "opencode_server_url": "http://localhost:4096"
 }
 ```
+
+### Configuration Fields
+
+- **`linear_api_key`**: Your Linear API token.
+- **`projects_dir`**: The parent directory where projects are cloned and run.
+- **`port`**: The port for the Orcwiz local web dashboard (default: `3000`).
+- **`linear_team_id`**: (Optional) Filter tasks by a specific Linear Team ID.
+- **`opencode_server_url`**: (Optional) The URL of an existing, running `opencode` server (e.g. started via `opencode serve` or `opencode web`). If configured and responsive, Orcwiz will run tasks by attaching to this server using the `--attach` flag. If it is unreachable or offline, Orcwiz falls back to starting a local `opencode` process.
 
 ## Usage
 
