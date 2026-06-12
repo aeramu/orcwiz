@@ -5,6 +5,8 @@ use axum::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
+use tower_http::services::ServeDir;
+use tower_http::cors::CorsLayer;
 
 use crate::db::Db;
 
@@ -15,10 +17,15 @@ struct AppState {
 pub async fn start_server(db: Arc<Db>, port: u16) {
     let state = Arc::new(AppState { db });
 
+    let api_routes = Router::new()
+        .route("/tasks", get(list_tasks).post(add_task))
+        .route("/tasks/:id/status", put(update_status))
+        .route("/tasks/:id/run", post(run_task));
+
     let app = Router::new()
-        .route("/api/tasks", get(list_tasks).post(add_task))
-        .route("/api/tasks/:id/status", put(update_status))
-        .route("/api/tasks/:id/run", post(run_task))
+        .nest("/api", api_routes)
+        .fallback_service(ServeDir::new("web/dist"))
+        .layer(CorsLayer::permissive())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
