@@ -60,8 +60,31 @@ Update the source of truth once the user-approved plan is complete.
 - **Add Comments:** Post a summary of the completed work and links to generated artifacts (PRs, documents) on the Linear issue.
 - **Update Status:** Transition the Linear issue to the appropriate completion state (e.g., "Ready to Review").
 
-## Common Pitfalls
+## Output Format
+When presenting the plan to the user for confirmation (Step 3), you MUST use the following structured Markdown format to ensure uniformity:
 
+```markdown
+### 🎯 Goal
+[Brief summary of the issue and what constitutes completion]
+
+### 🔍 Context
+[Key findings from the Linear issue, relevant linked PRs, and current repository state]
+
+### 📋 Implementation Plan
+- **Step 1:** [Description of action]
+- **Step 2:** [Description of action]
+
+### 🤖 Sub-Task Delegation
+1. **[Task Name]**
+   - **Delegation:** [Which sub-agent or role will handle this]
+   - **Details:** [Specific instructions and context passed to the sub-agent]
+2. [Task Name]...
+
+### ❓ Open Questions
+[Any questions or clarifications needed from the user before proceeding, or state "None" if clear]
+```
+
+## Common Pitfalls
 1. **Skipping Confirmation:** Proceeding directly to delegation without waiting for the user to approve the plan. This can waste significant time and compute if the orchestrator misunderstood the Linear ticket.
 2. **Being Rigid with Adjustments:** Failing to properly incorporate user feedback during the interactive planning phase. If the user says "skip step 2", the plan must strictly reflect that.
 3. **Vague Task Breakdown:** Creating sub-tasks that are too broad (e.g., "Fix the bug"). Sub-tasks must be concrete (e.g., "Locate null pointer exception in `auth.ts` and add fallback").
