@@ -20,7 +20,7 @@ pub async fn start_server(db: Arc<Db>, port: u16) {
 
     let api_routes = Router::new()
         .route("/tasks", get(list_tasks).post(add_task))
-        .route("/tasks/:id", get(get_task))
+        .route("/tasks/:id", get(get_task).put(update_details))
         .route("/tasks/:id/status", put(update_status))
         .route("/tasks/:id/run", post(run_task));
 
@@ -83,6 +83,40 @@ async fn update_status(
     match state.db.update_task_status(id, &payload.status) {
         Ok(_) => Json(serde_json::json!({ "success": true })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateDetailsRequest {
+    title: Option<String>,
+    project_path: Option<String>,
+    description: Option<String>,
+}
+
+async fn update_details(
+    Path(id): Path<i64>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<UpdateDetailsRequest>,
+) -> axum::response::Response {
+    // Only allow update if status is backlog
+    let task = match state.db.get_task(id) {
+        Ok(Some(t)) => t,
+        Ok(None) => return (axum::http::StatusCode::NOT_FOUND, "Task not found").into_response(),
+        Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    if task.status != "backlog" {
+        return (axum::http::StatusCode::BAD_REQUEST, "Task can only be updated if it is in the backlog state").into_response();
+    }
+
+    match state.db.update_task_details(
+        id, 
+        payload.title.as_deref(), 
+        payload.project_path.as_deref(), 
+        payload.description.as_deref()
+    ) {
+        Ok(_) => Json(serde_json::json!({ "success": true })).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 

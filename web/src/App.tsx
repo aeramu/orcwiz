@@ -23,6 +23,10 @@ function App() {
   
   // Modal state
   const [showModal, setShowModal] = createSignal(false);
+  const [selectedTask, setSelectedTask] = createSignal<Task | null>(null);
+  const [isEditing, setIsEditing] = createSignal(false);
+  
+  // New task form state
   const [newTitle, setNewTitle] = createSignal('');
   const [newPath, setNewPath] = createSignal('');
   const [newDesc, setNewDesc] = createSignal('');
@@ -94,6 +98,55 @@ function App() {
     }
   };
 
+  // Edit Task handlers
+  const [editTitle, setEditTitle] = createSignal('');
+  const [editPath, setEditPath] = createSignal('');
+  const [editDesc, setEditDesc] = createSignal('');
+
+  const startEditing = () => {
+    const t = selectedTask();
+    if (t) {
+      setEditTitle(t.title);
+      setEditPath(t.project_path);
+      setEditDesc(t.description || '');
+      setIsEditing(true);
+    }
+  };
+
+  const handleUpdateTask = async () => {
+    const t = selectedTask();
+    if (!t) return;
+    
+    try {
+      const res = await fetch(`/api/tasks/${t.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: editTitle() || undefined,
+          project_path: editPath() || undefined,
+          description: editDesc() || undefined
+        })
+      });
+      
+      if (res.ok) {
+        setIsEditing(false);
+        fetchTasks();
+        // Update selected task view
+        setSelectedTask({
+          ...t,
+          title: editTitle() || t.title,
+          project_path: editPath() || t.project_path,
+          description: editDesc() || t.description
+        });
+      } else {
+        const text = await res.text();
+        alert("Failed to update: " + text);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   // Drag and Drop handlers
   let draggedTaskId: number | null = null;
 
@@ -155,14 +208,15 @@ function App() {
                     {(task) => (
                       <div 
                         draggable="true"
+                        onClick={() => setSelectedTask(task)}
                         onDragStart={(e) => onDragStart(e, task.id)}
-                        class="bg-gray-800 border border-gray-700 p-4 rounded-lg shadow-md cursor-grab active:cursor-grabbing hover:border-indigo-500/50 transition-colors group relative"
+                        class="bg-gray-800 border border-gray-700 p-4 rounded-lg shadow-md cursor-pointer hover:border-indigo-500/50 transition-colors group relative"
                       >
                         <div class="flex justify-between items-start mb-2">
                           <h3 class="font-medium text-gray-100 leading-tight pr-6">{task.title}</h3>
                           <Show when={col.id === 'backlog'}>
                             <button 
-                              onClick={() => runTask(task.id)}
+                              onClick={(e) => { e.stopPropagation(); runTask(task.id); }}
                               class="absolute top-3 right-3 text-gray-400 hover:text-green-400 transition-colors"
                               title="Run Task"
                             >
@@ -271,6 +325,133 @@ function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      </Show>
+
+      {/* Task Detail Modal */}
+      <Show when={selectedTask()}>
+        <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={() => { setSelectedTask(null); setIsEditing(false); }}>
+          <div class="bg-gray-800 border border-gray-700 rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div class="p-6 border-b border-gray-700 flex justify-between items-start">
+              <Show when={!isEditing()}>
+                <h2 class="text-2xl font-bold text-gray-100 pr-8">{selectedTask()?.title}</h2>
+              </Show>
+              <Show when={isEditing()}>
+                <input 
+                  type="text" 
+                  value={editTitle()}
+                  onInput={e => setEditTitle(e.currentTarget.value)}
+                  class="text-2xl font-bold text-gray-100 bg-gray-900 border border-indigo-500 rounded px-2 py-1 w-full mr-4 focus:outline-none"
+                />
+              </Show>
+              <button 
+                onClick={() => { setSelectedTask(null); setIsEditing(false); }}
+                class="text-gray-400 hover:text-gray-200 transition-colors mt-1"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <div class="p-6 space-y-6">
+              <div class="flex justify-between items-center">
+                <div class="flex gap-4">
+                  <span class="bg-indigo-900/50 text-indigo-300 border border-indigo-700/50 text-xs font-medium px-2.5 py-1 rounded">
+                    {COLUMNS.find(c => c.id === selectedTask()?.status)?.title}
+                  </span>
+                  <span class="text-xs text-gray-400 flex items-center">
+                    ID: {selectedTask()?.id}
+                  </span>
+                  <span class="text-xs text-gray-400 flex items-center">
+                    Created: {new Date(selectedTask()?.created_at || '').toLocaleString()}
+                  </span>
+                </div>
+                <Show when={selectedTask()?.status === 'backlog' && !isEditing()}>
+                  <button 
+                    onClick={startEditing}
+                    class="text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 px-3 py-1.5 rounded transition-colors"
+                  >
+                    Edit Task
+                  </button>
+                </Show>
+              </div>
+
+              <div>
+                <h3 class="text-sm font-medium text-gray-400 mb-2">Description</h3>
+                <Show when={!isEditing()}>
+                  <div class="bg-gray-900/50 rounded-lg p-4 border border-gray-700/50 text-sm text-gray-300 whitespace-pre-wrap min-h-[4rem]">
+                    {selectedTask()?.description || <span class="italic text-gray-500">No description provided.</span>}
+                  </div>
+                </Show>
+                <Show when={isEditing()}>
+                  <textarea 
+                    value={editDesc()}
+                    onInput={e => setEditDesc(e.currentTarget.value)}
+                    rows="4"
+                    class="w-full bg-gray-900/50 rounded-lg p-3 border border-indigo-500 text-sm text-gray-300 focus:outline-none resize-none"
+                  ></textarea>
+                </Show>
+              </div>
+
+              <div class="grid grid-cols-2 gap-6">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-400 mb-2">Project Path</h3>
+                  <Show when={!isEditing()}>
+                    <div class="flex items-center text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-gray-700/50">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h6a2 2 0 012 2v1H8a3 3 0 00-3 3v5H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+                      </svg>
+                      <span class="truncate">{selectedTask()?.project_path}</span>
+                    </div>
+                  </Show>
+                  <Show when={isEditing()}>
+                    <input 
+                      type="text" 
+                      value={editPath()}
+                      onInput={e => setEditPath(e.currentTarget.value)}
+                      class="w-full text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-indigo-500 focus:outline-none"
+                    />
+                  </Show>
+                </div>
+
+                <div>
+                  <h3 class="text-sm font-medium text-gray-400 mb-2">Session ID</h3>
+                  <div class="flex items-center text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-gray-700/50">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2 text-indigo-400/80" viewBox="0 0 20 20" fill="currentColor">
+                      <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+                    </svg>
+                    <span class="font-mono truncate">{selectedTask()?.session_id || 'Not started'}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div class="p-6 border-t border-gray-700 bg-gray-800/50 flex justify-end gap-3">
+              <Show when={isEditing()}>
+                <button 
+                  onClick={() => setIsEditing(false)}
+                  class="px-5 py-2 rounded-md bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors font-medium"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleUpdateTask}
+                  class="px-5 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 shadow-lg shadow-indigo-500/20 transition-colors font-medium"
+                >
+                  Save Changes
+                </button>
+              </Show>
+              <Show when={!isEditing()}>
+                <button 
+                  onClick={() => { setSelectedTask(null); setIsEditing(false); }}
+                  class="px-5 py-2 rounded-md bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors font-medium"
+                >
+                  Close
+                </button>
+              </Show>
+            </div>
           </div>
         </div>
       </Show>

@@ -53,6 +53,16 @@ enum TaskCommands {
         id: i64,
         status: String,
     },
+    /// Update a task's details (only if in backlog)
+    Update {
+        id: i64,
+        #[arg(short, long)]
+        title: Option<String>,
+        #[arg(short, long)]
+        project_path: Option<String>,
+        #[arg(short, long)]
+        description: Option<String>,
+    },
 }
 
 fn truncate(s: &str, max_width: usize) -> String {
@@ -163,6 +173,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     println!("Task {} status updated to '{}' successfully.", id, status);
                 } else {
                     println!("Error updating task status.");
+                }
+            }
+            TaskCommands::Update { id, title, project_path, description } => {
+                let config = config::Config::load();
+                let url = format!("http://localhost:{}/api/tasks/{}", config.port, id);
+                let client = reqwest::Client::new();
+                
+                let payload = serde_json::json!({
+                    "title": title,
+                    "project_path": project_path,
+                    "description": description
+                });
+
+                let res = client.put(&url).json(&payload).send().await?;
+                if res.status().is_success() {
+                    println!("Task {} updated successfully.", id);
+                } else if res.status() == reqwest::StatusCode::BAD_REQUEST {
+                    let text = res.text().await.unwrap_or_default();
+                    println!("Failed to update task: {}", text);
+                } else {
+                    println!("Error updating task.");
                 }
             }
         },

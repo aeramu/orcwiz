@@ -73,6 +73,20 @@ impl Db {
         Ok(())
     }
 
+    pub fn update_task_details(&self, id: i64, title: Option<&str>, project_path: Option<&str>, description: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        if let Some(t) = title {
+            conn.execute("UPDATE tasks SET title = ?1 WHERE id = ?2", params![t, id])?;
+        }
+        if let Some(p) = project_path {
+            conn.execute("UPDATE tasks SET project_path = ?1 WHERE id = ?2", params![p, id])?;
+        }
+        if let Some(d) = description {
+            conn.execute("UPDATE tasks SET description = ?1 WHERE id = ?2", params![d, id])?;
+        }
+        Ok(())
+    }
+
     pub fn list_tasks(&self) -> Result<Vec<Task>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, title, description, status, project_path, session_id, created_at FROM tasks ORDER BY created_at ASC")?;
