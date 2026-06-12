@@ -73,21 +73,58 @@ impl Runner {
             .spawn()?;
 
         let stdout = child.stdout.take().expect("Failed to capture stdout");
-        let mut reader = tokio::io::BufReader::new(stdout);
-        use tokio::io::AsyncBufReadExt;
-        let mut lines = reader.lines();
+        let stderr = child.stderr.take().expect("Failed to capture stderr");
 
+        // Consume stderr in background to prevent pipe buffer from filling up and deadlocking
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                warn!("opencode stderr: {}", line);
+            }
+        });
+
+        // Read stdout chunk by chunk to avoid blocking on newlines (in case of spinners, etc.)
+        use tokio::io::AsyncReadExt;
+        let mut reader = stdout;
+        let mut buf = [0u8; 1024];
         let mut found_session = false;
+        let mut output_acc = String::new();
 
-        while let Ok(Some(line)) = lines.next_line().await {
-            info!("opencode[{}]: {}", task_id, line);
-            if !found_session {
-                if let Some(idx) = line.find("ses_") {
-                    let end_idx = line[idx..].find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(line[idx..].len());
-                    let session_id = &line[idx..idx+end_idx];
-                    info!("Extracted session id: {}", session_id);
-                    let _ = db.update_task_session(task_id, session_id);
-                    found_session = true;
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buf[..n]);
+                    // Print chunk to terminal just so we can see what's happening
+                    print!("{}", chunk);
+                    
+                    if !found_session {
+                        output_acc.push_str(&chunk);
+                        if let Some(idx) = output_acc.find("ses_") {
+                            // find end of session ID
+                            let after_ses = &output_acc[idx..];
+                            let end_idx = after_ses.find(|c: char| !c.is_alphanumeric() && c != '_');
+                            
+                            if let Some(e) = end_idx {
+                                let session_id = &after_ses[..e];
+                                info!("Extracted session id: {}", session_id);
+                                let _ = db.update_task_session(task_id, session_id);
+                                found_session = true;
+                            } else if after_ses.len() > 35 {
+                                // If no terminator is found but it's long enough, it's likely complete
+                                let session_id = after_ses;
+                                info!("Extracted session id: {}", session_id);
+                                let _ = db.update_task_session(task_id, session_id);
+                                found_session = true;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Error reading stdout: {}", e);
+                    break;
                 }
             }
         }
