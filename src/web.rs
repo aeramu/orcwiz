@@ -90,13 +90,14 @@ struct AddTaskRequest {
     title: String,
     project_path: String,
     description: Option<String>,
+    parent_id: Option<i64>,
 }
 
 async fn add_task(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AddTaskRequest>,
 ) -> Json<serde_json::Value> {
-    match state.db.add_task(&payload.title, &payload.project_path, payload.description.as_deref()) {
+    match state.db.add_task(&payload.title, &payload.project_path, payload.description.as_deref(), payload.parent_id) {
         Ok(id) => Json(serde_json::json!({ "id": id })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
@@ -123,6 +124,7 @@ struct UpdateDetailsRequest {
     title: Option<String>,
     project_path: Option<String>,
     description: Option<String>,
+    parent_id: Option<i64>,
 }
 
 async fn update_details(
@@ -145,7 +147,8 @@ async fn update_details(
         id, 
         payload.title.as_deref(), 
         payload.project_path.as_deref(), 
-        payload.description.as_deref()
+        payload.description.as_deref(),
+        Some(payload.parent_id)
     ) {
         Ok(_) => Json(serde_json::json!({ "success": true })).into_response(),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),

@@ -7,6 +7,7 @@ type Task = {
   status: string;
   project_path: string;
   session_id: string | null;
+  parent_id: number | null;
   created_at: string;
 };
 
@@ -30,6 +31,7 @@ function App() {
   const [newTitle, setNewTitle] = createSignal('');
   const [newPath, setNewPath] = createSignal('');
   const [newDesc, setNewDesc] = createSignal('');
+  const [newParentId, setNewParentId] = createSignal('');
 
   const fetchTasks = async () => {
     try {
@@ -85,13 +87,15 @@ function App() {
         body: JSON.stringify({
           title: newTitle(),
           project_path: newPath(),
-          description: newDesc() || null
+          description: newDesc() || null,
+          parent_id: newParentId() ? parseInt(newParentId(), 10) : null
         })
       });
       setShowModal(false);
       setNewTitle('');
       setNewPath('');
       setNewDesc('');
+      setNewParentId('');
       fetchTasks();
     } catch (e) {
       console.error(e);
@@ -102,6 +106,7 @@ function App() {
   const [editTitle, setEditTitle] = createSignal('');
   const [editPath, setEditPath] = createSignal('');
   const [editDesc, setEditDesc] = createSignal('');
+  const [editParentId, setEditParentId] = createSignal('');
 
   const startEditing = () => {
     const t = selectedTask();
@@ -109,6 +114,7 @@ function App() {
       setEditTitle(t.title);
       setEditPath(t.project_path);
       setEditDesc(t.description || '');
+      setEditParentId(t.parent_id?.toString() || '');
       setIsEditing(true);
     }
   };
@@ -124,7 +130,8 @@ function App() {
         body: JSON.stringify({
           title: editTitle() || undefined,
           project_path: editPath() || undefined,
-          description: editDesc() || undefined
+          description: editDesc() || undefined,
+          parent_id: editParentId() ? parseInt(editParentId(), 10) : null
         })
       });
       
@@ -136,7 +143,8 @@ function App() {
           ...t,
           title: editTitle() || t.title,
           project_path: editPath() || t.project_path,
-          description: editDesc() || t.description
+          description: editDesc() || t.description,
+          parent_id: editParentId() ? parseInt(editParentId(), 10) : null
         });
       } else {
         const text = await res.text();
@@ -204,7 +212,7 @@ function App() {
                 </div>
                 
                 <div class="flex-1 p-3 overflow-y-auto column-scroll space-y-3">
-                  <For each={tasks().filter(t => t.status === col.id)}>
+                  <For each={tasks().filter(t => t.status === col.id && t.parent_id === null)}>
                     {(task) => (
                       <div 
                         draggable="true"
@@ -247,6 +255,39 @@ function App() {
                               <span class="font-mono">{task.session_id}</span>
                             </div>
                           </Show>
+                        </div>
+                        
+                        {/* Nested Subtasks */}
+                        <div class="mt-3 space-y-1.5">
+                          <For each={tasks().filter(sub => sub.parent_id === task.id)}>
+                            {(subtask) => (
+                              <div 
+                                onClick={(e) => { e.stopPropagation(); setSelectedTask(subtask); }}
+                                class="bg-gray-900/60 border border-gray-700/60 rounded px-2.5 py-1.5 flex items-center justify-between group/subtask hover:bg-gray-700/60 transition-colors"
+                              >
+                                <div class="flex items-center gap-2 overflow-hidden">
+                                  <span class="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0"></span>
+                                  <span class="text-xs text-gray-300 truncate">{subtask.title}</span>
+                                </div>
+                                <div class="flex items-center gap-2 shrink-0">
+                                  <span class="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">
+                                    {subtask.status.replace('_', ' ')}
+                                  </span>
+                                  <Show when={subtask.status === 'backlog'}>
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); runTask(subtask.id); }}
+                                      class="text-gray-500 hover:text-green-400 transition-colors opacity-0 group-hover/subtask:opacity-100"
+                                      title="Run Subtask"
+                                    >
+                                      <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
+                                      </svg>
+                                    </button>
+                                  </Show>
+                                </div>
+                              </div>
+                            )}
+                          </For>
                         </div>
                       </div>
                     )}
@@ -309,6 +350,17 @@ function App() {
                 ></textarea>
               </div>
               
+              <div>
+                <label class="block text-sm font-medium text-gray-400 mb-1">Parent Task ID (Optional)</label>
+                <input 
+                  type="number" 
+                  value={newParentId()}
+                  onInput={e => setNewParentId(e.currentTarget.value)}
+                  class="w-full bg-gray-900 border border-gray-700 rounded-md px-4 py-2 text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-colors"
+                  placeholder="e.g. 1"
+                />
+              </div>
+              
               <div class="pt-4 flex justify-end gap-3">
                 <button 
                   type="button" 
@@ -364,6 +416,11 @@ function App() {
                   <span class="text-xs text-gray-400 flex items-center">
                     ID: {selectedTask()?.id}
                   </span>
+                  <Show when={selectedTask()?.parent_id}>
+                    <span class="text-xs text-indigo-400 border border-indigo-700/50 bg-indigo-900/30 px-2 py-0.5 rounded flex items-center">
+                      Subtask of #{selectedTask()?.parent_id}
+                    </span>
+                  </Show>
                   <span class="text-xs text-gray-400 flex items-center">
                     Created: {new Date(selectedTask()?.created_at || '').toLocaleString()}
                   </span>
@@ -411,6 +468,13 @@ function App() {
                       type="text" 
                       value={editPath()}
                       onInput={e => setEditPath(e.currentTarget.value)}
+                      class="w-full text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-indigo-500 focus:outline-none mb-3"
+                    />
+                    <h3 class="text-sm font-medium text-gray-400 mb-2 mt-4">Parent Task ID</h3>
+                    <input 
+                      type="number" 
+                      value={editParentId()}
+                      onInput={e => setEditParentId(e.currentTarget.value)}
                       class="w-full text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-indigo-500 focus:outline-none"
                     />
                   </Show>

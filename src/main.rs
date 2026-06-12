@@ -39,6 +39,8 @@ enum TaskCommands {
         title: String,
         project_path: String,
         description: Option<String>,
+        #[arg(long)]
+        parent_id: Option<i64>,
     },
     /// View task detail
     Info {
@@ -62,6 +64,8 @@ enum TaskCommands {
         project_path: Option<String>,
         #[arg(short, long)]
         description: Option<String>,
+        #[arg(long)]
+        parent_id: Option<i64>,
     },
 }
 
@@ -110,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             println!("{:-<100}", "");
         }
         Commands::Task { action } => match action {
-            TaskCommands::Add { title, project_path, description } => {
+            TaskCommands::Add { title, project_path, description, parent_id } => {
                 let config = config::Config::load();
                 let url = format!("http://localhost:{}/api/tasks", config.port);
                 let client = reqwest::Client::new();
@@ -118,7 +122,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let payload = serde_json::json!({
                     "title": title,
                     "project_path": project_path,
-                    "description": description
+                    "description": description,
+                    "parent_id": parent_id
                 });
 
                 let res = client.post(&url).json(&payload).send().await?;
@@ -137,6 +142,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 if res.status().is_success() {
                     let task: db::Task = res.json().await?;
                     println!("Task ID:       {}", task.id);
+                    if let Some(pid) = task.parent_id {
+                        println!("Parent ID:     {}", pid);
+                    }
                     println!("Title:         {}", task.title);
                     println!("Status:        {}", task.status);
                     println!("Project Path:  {}", task.project_path);
@@ -175,7 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     println!("Error updating task status.");
                 }
             }
-            TaskCommands::Update { id, title, project_path, description } => {
+            TaskCommands::Update { id, title, project_path, description, parent_id } => {
                 let config = config::Config::load();
                 let url = format!("http://localhost:{}/api/tasks/{}", config.port, id);
                 let client = reqwest::Client::new();
@@ -183,7 +191,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let payload = serde_json::json!({
                     "title": title,
                     "project_path": project_path,
-                    "description": description
+                    "description": description,
+                    "parent_id": parent_id
                 });
 
                 let res = client.put(&url).json(&payload).send().await?;
@@ -214,7 +223,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 info!("Found todo task: {}", task.title);
                                 let _ = db_clone.update_task_status(task.id, "in_progress");
 
-                                let desc = task.description.as_deref().unwrap_or("");
+                                let desc = task.description.clone().unwrap_or_default();
+                                let title = task.title.clone();
+                                let task_id = task.id;
                                 let project_path = match runner_clone.prepare_project(&task.project_path).await {
                                     Ok(p) => p,
                                     Err(e) => {
@@ -223,27 +234,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     }
                                 };
 
-                                match runner_clone.run_opencode(&project_path, &task.title, desc).await {
-                                    Ok(session_id) => {
-                                        if let Some(sid) = session_id {
-                                            info!("opencode session created: {}", sid);
-                                            let _ = db_clone.update_task_session(task.id, &sid);
-                                        }
-                                        let _ = db_clone.update_task_status(task.id, "review");
+                                let db_for_runner = Arc::clone(&db_clone);
+                                let runner_for_spawn = Arc::clone(&runner_clone);
+
+                                tokio::spawn(async move {
+                                    if let Err(e) = runner_for_spawn.run_opencode(task_id, db_for_runner, project_path, title, desc).await {
+                                        error!("opencode execution failed for task {}: {}", task_id, e);
                                     }
-                                    Err(e) => {
-                                        error!("Failed to run opencode for task {}: {}", task.id, e);
-                                        let _ = db_clone.update_task_status(task.id, "backlog");
-                                    }
-                                }
+                                });
                             }
                         }
                     }
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             });
 
-            // Start web server (blocks)
+            // Start the web server on the main thread
             web::start_server(db, config.port).await;
         }
     }

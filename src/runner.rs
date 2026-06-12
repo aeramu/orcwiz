@@ -28,7 +28,14 @@ impl Runner {
         Ok(expanded)
     }
 
-    pub async fn run_opencode(&self, project_path: &Path, title: &str, description: &str) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn run_opencode(
+        &self, 
+        task_id: i64, 
+        db: std::sync::Arc<crate::db::Db>, 
+        project_path: std::path::PathBuf, 
+        title: String, 
+        description: String
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let prompt = format!(
             "Task: {}\nDescription: {}",
             title,
@@ -59,30 +66,35 @@ impl Runner {
             }
         }
 
-        let child = cmd
+        let mut child = cmd
             .current_dir(project_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
 
-        let mut session_id = None;
+        let stdout = child.stdout.take().expect("Failed to capture stdout");
+        let mut reader = tokio::io::BufReader::new(stdout);
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = reader.lines();
 
-        let output = child.wait_with_output().await?;
+        let mut found_session = false;
 
-        let stdout_str = String::from_utf8_lossy(&output.stdout);
-        let stderr_str = String::from_utf8_lossy(&output.stderr);
-        
-        info!("opencode output: {}", stdout_str);
-        if !stderr_str.is_empty() {
-            warn!("opencode stderr: {}", stderr_str);
+        while let Ok(Some(line)) = lines.next_line().await {
+            info!("opencode[{}]: {}", task_id, line);
+            if !found_session {
+                if let Some(idx) = line.find("ses_") {
+                    let end_idx = line[idx..].find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(line[idx..].len());
+                    let session_id = &line[idx..idx+end_idx];
+                    info!("Extracted session id: {}", session_id);
+                    let _ = db.update_task_session(task_id, session_id);
+                    found_session = true;
+                }
+            }
         }
 
-        if let Some(idx) = stdout_str.find("ses_") {
-            let end_idx = stdout_str[idx..].find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(stdout_str[idx..].len());
-            session_id = Some(stdout_str[idx..idx+end_idx].to_string());
-        }
+        let _ = child.wait().await?;
 
-        if session_id.is_none() {
+        if !found_session {
             let list_output = Command::new("opencode")
                 .arg("session")
                 .arg("list")
@@ -91,10 +103,13 @@ impl Runner {
             let list_str = String::from_utf8_lossy(&list_output.stdout);
             if let Some(idx) = list_str.find("ses_") {
                 let end_idx = list_str[idx..].find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(list_str[idx..].len());
-                session_id = Some(list_str[idx..idx+end_idx].to_string());
+                let session_id = &list_str[idx..idx+end_idx];
+                let _ = db.update_task_session(task_id, session_id);
             }
         }
 
-        Ok(session_id)
+        let _ = db.update_task_status(task_id, "review");
+
+        Ok(())
     }
 }
