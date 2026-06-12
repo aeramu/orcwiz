@@ -1,28 +1,36 @@
 # Orcwiz 🧙‍♂️
 
-Orcwiz is an AI Agent Orchestration Tool built in Rust. It acts as a bridge between your task tracker (Linear) and your AI coding agent (`opencode`). It automatically polls for new tasks, sets up the workspace, dispatches the AI to complete the work, and tracks the execution history in a web dashboard.
+Orcwiz is an in-house CLI Kanban Board and AI Agent Orchestration Tool built in Rust and SolidJS. It allows you to manage tasks locally and dispatch the AI coding agent (`opencode`) to execute them in your workspaces. It features a fast CLI and a beautiful, drag-and-drop web dashboard.
 
 ## Features
 
-- **Automated Linear Polling:** Continuously fetches "unstarted" tasks assigned to you.
-- **Smart Workspace Setup:** Automatically parses git URLs from the task description and clones the repositories if they don't exist locally.
-- **Agent Orchestration:** Spawns `opencode` to execute the task in the appropriate project directory, with instructions to move the task to 'Ready to Review' upon completion.
-- **Web Dashboard:** An embedded Axum web server (`http://localhost:3000`) provides a UI to monitor running sessions and view session history.
-- **Background Daemon:** Easy installation commands to run Orcwiz silently in the background on macOS (via `launchd`), Windows (via Windows Services), and Linux (via `systemd`).
+- **In-House Kanban Board:** Create and manage your tasks without relying on external services. Track tasks across `Backlog`, `To Do`, `In Progress`, `Review`, and `Done` states.
+- **Agent Orchestration:** Automatically dispatches `opencode` to execute tasks that are queued up, running them directly in your specified local project paths.
+- **CLI Management:** Add tasks, view the board, and manually trigger orchestrations straight from your terminal.
+- **Beautiful SolidJS Web Dashboard:** A sleek, mobile-responsive, dark-themed Kanban web UI built with SolidJS and TailwindCSS. Features HTML5 drag-and-drop for task management.
 
 ## Installation
 
 ### Prerequisites
 
 - [Rust & Cargo](https://rustup.rs/)
+- [Bun](https://bun.sh/) (for building the SolidJS frontend)
 - [opencode CLI](https://opencode.ai) installed and available in your `$PATH`
-- A [Linear API Key](https://linear.app/settings/api)
 
 ### Build from Source
 
+First, build the SolidJS frontend:
+
 ```bash
-git clone https://github.com/your-username/orcwiz.git
-cd orcwiz
+cd web
+bun install
+bun run build
+cd ..
+```
+
+Then, compile the Rust backend:
+
+```bash
 cargo build --release
 ```
 
@@ -37,58 +45,54 @@ Open the configuration file and configure the settings:
 
 ```json
 {
-  "linear_api_key": "YOUR_LINEAR_API_KEY_HERE",
   "projects_dir": "/Users/your_username/dev",
   "port": 3000,
-  "linear_team_id": null,
   "opencode_server_url": "http://localhost:4096"
 }
 ```
 
 ### Configuration Fields
 
-- **`linear_api_key`**: Your Linear API token.
 - **`projects_dir`**: The parent directory where projects are cloned and run.
-- **`port`**: The port for the Orcwiz local web dashboard (default: `3000`).
-- **`linear_team_id`**: (Optional) Filter tasks by a specific Linear Team ID.
-- **`opencode_server_url`**: (Optional) The URL of an existing, running `opencode` server (e.g. started via `opencode serve` or `opencode web`). If configured and responsive, Orcwiz will run tasks by attaching to this server using the `--attach` flag. If it is unreachable or offline, Orcwiz falls back to starting a local `opencode` process.
+- **`port`**: The port for the Orcwiz local web dashboard and API (default: `3000`).
+- **`opencode_server_url`**: (Optional) The URL of an existing, running `opencode` server (e.g., started via `opencode serve` or `opencode web`). If configured and responsive, Orcwiz will run tasks by attaching to this server using the `--attach` flag.
 
 ## Usage
 
-### Start the Orchestrator Manually
+### Start the Orchestrator and Web Dashboard
 
-To run the orchestrator and web server in your terminal:
+Run the server in the background or in a separate terminal. This will serve the SolidJS Kanban UI and begin processing tasks queued for execution:
 
 ```bash
 orcwiz start
 ```
-You can now access the web dashboard at `http://localhost:3000`.
+You can now access the interactive drag-and-drop web dashboard at `http://localhost:3000`.
 
-### Install as a Background Service
+### CLI Commands
 
-If you want Orcwiz to run silently in the background automatically:
+You can interact with your Kanban board directly from the terminal via the HTTP API:
 
-```bash
-orcwiz install
-```
-*Follow the on-screen instructions for your specific OS to activate the daemon.*
+- **View the Board**:
+  ```bash
+  orcwiz board
+  ```
 
-### List Local Sessions
-
-To quickly check the status of your tasks from the CLI:
-
-```bash
-orcwiz sessions
-```
+- **Task Management**:
+  ```bash
+  orcwiz task add "Implement Login" "~/dev/my-project" "Move login logic to auth module"
+  orcwiz task info <task_id>
+  orcwiz task run <task_id>
+  orcwiz task set-status <task_id> "done"
+  ```
 
 ## How It Works
 
-1. **Poll:** Every 60 seconds, Orcwiz queries the Linear GraphQL API for tasks assigned to you in the "unstarted" state.
-2. **Setup:** It checks the task description for a Git URL or local folder path. If a Git URL is found, it clones it into your `projects_dir`.
-3. **Execute:** It runs `opencode run "..."` in the target directory, passing along the task details.
-4. **Track:** The output is captured, the generated `opencode` session ID is extracted, and the state is saved to a local SQLite database (`~/.local/share/orcwiz/orcwiz.db`).
-5. **View:** When you click "View History" in the web dashboard, Orcwiz streams the task history directly from `opencode export <session_id>`.
+1. **Kanban Database:** Tasks are stored in a local SQLite database (`~/.local/share/orcwiz/orcwiz.db`).
+2. **Web API:** The Rust Axum server provides endpoints at `/api/tasks` for the CLI and the frontend dashboard to communicate with.
+3. **Frontend:** The SolidJS application in `/web` is compiled and served statically via the Axum backend on port 3000.
+4. **Execution Loop:** The background loop in `orcwiz start` constantly checks for tasks in the `todo` state. When found, it runs `opencode run "..."` in the target `project_path`, passing along the task details, and shifts the task into `in_progress`.
+5. **Session Tracking:** The `opencode` session ID is extracted and saved to the database.
 
 ## License
 
-MIT License
+GNU License
