@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::{info, error};
 
 mod config;

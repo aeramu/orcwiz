@@ -52,7 +52,7 @@ pub async fn start_server(db: Arc<Db>, port: u16) {
 
     let api_routes = Router::new()
         .route("/tasks", get(list_tasks).post(add_task))
-        .route("/tasks/:id", get(get_task).put(update_details))
+        .route("/tasks/:id", get(get_task).put(update_details).delete(delete_task))
         .route("/tasks/:id/status", put(update_status))
         .route("/tasks/:id/run", post(run_task));
 
@@ -150,6 +150,26 @@ async fn update_details(
         payload.description.as_deref(),
         Some(payload.parent_id)
     ) {
+        Ok(_) => Json(serde_json::json!({ "success": true })).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn delete_task(
+    Path(id): Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Response {
+    let task = match state.db.get_task(id) {
+        Ok(Some(t)) => t,
+        Ok(None) => return (axum::http::StatusCode::NOT_FOUND, "Task not found").into_response(),
+        Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    if task.status != "backlog" {
+        return (axum::http::StatusCode::BAD_REQUEST, "Task can only be deleted if it is in the backlog state").into_response();
+    }
+
+    match state.db.delete_task(id) {
         Ok(_) => Json(serde_json::json!({ "success": true })).into_response(),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

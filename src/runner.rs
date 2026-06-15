@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 use tracing::{info, warn};
@@ -78,7 +78,7 @@ impl Runner {
         // Consume stderr in background to prevent pipe buffer from filling up and deadlocking
         tokio::spawn(async move {
             use tokio::io::AsyncBufReadExt;
-            let mut reader = tokio::io::BufReader::new(stderr);
+            let reader = tokio::io::BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 warn!("opencode stderr: {}", line);

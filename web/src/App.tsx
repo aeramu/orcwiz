@@ -32,6 +32,24 @@ function App() {
   const [newPath, setNewPath] = createSignal('');
   const [newDesc, setNewDesc] = createSignal('');
   const [newParentId, setNewParentId] = createSignal('');
+  const [showPathSuggestions, setShowPathSuggestions] = createSignal(false);
+
+  const uniquePaths = () => {
+    const paths = tasks().map(t => t.project_path).filter(p => p && p.trim() !== '');
+    return Array.from(new Set(paths)).sort();
+  };
+
+  const [showEditPathSuggestions, setShowEditPathSuggestions] = createSignal(false);
+
+  const filteredPaths = () => {
+    const current = newPath().toLowerCase();
+    return uniquePaths().filter(p => p.toLowerCase().includes(current));
+  };
+
+  const editFilteredPaths = () => {
+    const current = editPath().toLowerCase();
+    return uniquePaths().filter(p => p.toLowerCase().includes(current));
+  };
 
   const fetchTasks = async () => {
     try {
@@ -116,6 +134,26 @@ function App() {
       setEditDesc(t.description || '');
       setEditParentId(t.parent_id?.toString() || '');
       setIsEditing(true);
+    }
+  };
+
+  const handleDeleteTask = async () => {
+    const t = selectedTask();
+    if (!t) return;
+    if (!confirm("Are you sure you want to delete this task?")) return;
+
+    try {
+      const res = await fetch(`/api/tasks/${t.id}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        setSelectedTask(null);
+        fetchTasks();
+      } else {
+        console.error("Failed to delete task:", await res.text());
+      }
+    } catch (e) {
+      console.error("Failed to delete task", e);
     }
   };
 
@@ -327,16 +365,39 @@ function App() {
                 />
               </div>
               
-              <div>
+              <div class="relative">
                 <label class="block text-sm font-medium text-gray-400 mb-1">Project Path</label>
                 <input 
                   type="text" 
                   required
                   value={newPath()}
-                  onInput={e => setNewPath(e.currentTarget.value)}
+                  onInput={e => {
+                    setNewPath(e.currentTarget.value);
+                    setShowPathSuggestions(true);
+                  }}
+                  onFocus={() => setShowPathSuggestions(true)}
+                  onBlur={() => setTimeout(() => setShowPathSuggestions(false), 200)}
                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-4 py-2 text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-colors"
                   placeholder="e.g. ~/dev/my-project"
                 />
+                <Show when={showPathSuggestions() && filteredPaths().length > 0}>
+                  <div class="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-700 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                    <For each={filteredPaths()}>
+                      {(path) => (
+                        <button
+                          type="button"
+                          class="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
+                          onClick={() => {
+                            setNewPath(path);
+                            setShowPathSuggestions(false);
+                          }}
+                        >
+                          {path}
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                </Show>
               </div>
               
               <div>
@@ -426,12 +487,20 @@ function App() {
                   </span>
                 </div>
                 <Show when={selectedTask()?.status === 'backlog' && !isEditing()}>
-                  <button 
-                    onClick={startEditing}
-                    class="text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 px-3 py-1.5 rounded transition-colors"
-                  >
-                    Edit Task
-                  </button>
+                  <div class="flex space-x-2">
+                    <button 
+                      onClick={handleDeleteTask}
+                      class="text-xs bg-red-900/60 hover:bg-red-800/60 text-red-200 border border-red-800/60 px-3 py-1.5 rounded transition-colors"
+                    >
+                      Delete
+                    </button>
+                    <button 
+                      onClick={startEditing}
+                      class="text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 px-3 py-1.5 rounded transition-colors"
+                    >
+                      Edit Task
+                    </button>
+                  </div>
                 </Show>
               </div>
 
@@ -464,12 +533,37 @@ function App() {
                     </div>
                   </Show>
                   <Show when={isEditing()}>
-                    <input 
-                      type="text" 
-                      value={editPath()}
-                      onInput={e => setEditPath(e.currentTarget.value)}
-                      class="w-full text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-indigo-500 focus:outline-none mb-3"
-                    />
+                    <div class="relative">
+                      <input 
+                        type="text" 
+                        value={editPath()}
+                        onInput={e => {
+                          setEditPath(e.currentTarget.value);
+                          setShowEditPathSuggestions(true);
+                        }}
+                        onFocus={() => setShowEditPathSuggestions(true)}
+                        onBlur={() => setTimeout(() => setShowEditPathSuggestions(false), 200)}
+                        class="w-full text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-indigo-500 focus:outline-none mb-3"
+                      />
+                      <Show when={showEditPathSuggestions() && editFilteredPaths().length > 0}>
+                        <div class="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-700 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                          <For each={editFilteredPaths()}>
+                            {(path) => (
+                              <button
+                                type="button"
+                                class="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
+                                onClick={() => {
+                                  setEditPath(path);
+                                  setShowEditPathSuggestions(false);
+                                }}
+                              >
+                                {path}
+                              </button>
+                            )}
+                          </For>
+                        </div>
+                      </Show>
+                    </div>
                     <h3 class="text-sm font-medium text-gray-400 mb-2 mt-4">Parent Task ID</h3>
                     <input 
                       type="number" 
