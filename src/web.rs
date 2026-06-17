@@ -45,12 +45,15 @@ async fn static_handler(uri: axum::http::Uri) -> axum::response::Response {
 
 struct AppState {
     db: Arc<Db>,
+    config: crate::config::Config,
 }
 
-pub async fn start_server(db: Arc<Db>, port: u16) {
-    let state = Arc::new(AppState { db });
+pub async fn start_server(db: Arc<Db>, config: crate::config::Config) {
+    let port = config.port;
+    let state = Arc::new(AppState { db, config });
 
     let api_routes = Router::new()
+        .route("/config", get(get_config))
         .route("/tasks", get(list_tasks).post(add_task))
         .route("/tasks/:id", get(get_task).put(update_details).delete(delete_task))
         .route("/tasks/:id/status", put(update_status))
@@ -69,11 +72,80 @@ pub async fn start_server(db: Arc<Db>, port: u16) {
     axum::serve(listener, app).await.unwrap();
 }
 
+async fn get_config(
+    State(state): State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    let username = std::env::var("OPENCODE_SERVER_USERNAME")
+        .unwrap_or_else(|_| "opencode".to_string());
+    let auth_header = std::env::var("OPENCODE_SERVER_PASSWORD").ok().map(|password| {
+        use base64::Engine;
+        let auth_str = format!("{}:{}", username, password);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(auth_str);
+        format!("Basic {}", encoded)
+    });
+
+    axum::Json(serde_json::json!({
+        "opencode_server_url": state.config.opencode_server_url,
+        "opencode_auth_header": auth_header,
+    }))
+}
+
+#[derive(serde::Serialize)]
+struct TaskResponse {
+    id: i64,
+    title: String,
+    description: Option<String>,
+    status: String,
+    project_path: String,
+    absolute_project_path: String,
+    session_id: Option<String>,
+    parent_id: Option<i64>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn resolve_absolute_path(project_path: &str) -> String {
+    let resolved = if project_path.starts_with("~/") {
+        if let Some(user_dirs) = directories::UserDirs::new() {
+            user_dirs.home_dir().join(project_path.trim_start_matches("~/"))
+        } else {
+            std::path::PathBuf::from(project_path)
+        }
+    } else {
+        let path = std::path::PathBuf::from(project_path);
+        if path.is_absolute() {
+            path
+        } else {
+            let config = crate::config::Config::load();
+            config.projects_dir.join(path)
+        }
+    };
+    resolved.to_string_lossy().to_string()
+}
+
 async fn list_tasks(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<crate::db::Task>>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<Vec<TaskResponse>>, (axum::http::StatusCode, Json<serde_json::Value>)> {
     match state.db.list_tasks() {
-        Ok(tasks) => Ok(Json(tasks)),
+        Ok(tasks) => {
+            let res: Vec<TaskResponse> = tasks
+                .into_iter()
+                .map(|t| {
+                    let abs_path = resolve_absolute_path(&t.project_path);
+                    TaskResponse {
+                        id: t.id,
+                        title: t.title,
+                        description: t.description,
+                        status: t.status,
+                        project_path: t.project_path,
+                        absolute_project_path: abs_path,
+                        session_id: t.session_id,
+                        parent_id: t.parent_id,
+                        created_at: t.created_at,
+                    }
+                })
+                .collect();
+            Ok(Json(res))
+        }
         Err(e) => Err((
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
@@ -84,9 +156,23 @@ async fn list_tasks(
 async fn get_task(
     Path(id): Path<i64>,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<crate::db::Task>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<TaskResponse>, (axum::http::StatusCode, Json<serde_json::Value>)> {
     match state.db.get_task(id) {
-        Ok(Some(task)) => Ok(Json(task)),
+        Ok(Some(t)) => {
+            let abs_path = resolve_absolute_path(&t.project_path);
+            let res = TaskResponse {
+                id: t.id,
+                title: t.title,
+                description: t.description,
+                status: t.status,
+                project_path: t.project_path,
+                absolute_project_path: abs_path,
+                session_id: t.session_id,
+                parent_id: t.parent_id,
+                created_at: t.created_at,
+            };
+            Ok(Json(res))
+        }
         Ok(None) => Err((
             axum::http::StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "Task not found" })),

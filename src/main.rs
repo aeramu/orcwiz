@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     orchestrator.start();
 
     // Start the web server on the main thread
-    web::start_server(db, config.port).await;
+    web::start_server(db, config).await;
 
     Ok(())
 }

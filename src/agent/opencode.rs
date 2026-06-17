@@ -68,7 +68,7 @@ impl Agent for OpencodeAgent {
 
             info!("Created OpenCode server session: {}", session_id);
 
-            let session_id_str = SessionId::Sdk(session_id.clone()).to_string();
+            let session_id_str = SessionId::Opencode(session_id.clone()).to_string();
             let server_url_clone = server_url.clone();
             let prompt = format!("Task: {}\nDescription: {}", title, description);
             let session_id_payload = session_id.clone();
@@ -113,7 +113,7 @@ impl Agent for OpencodeAgent {
         session_id: &str,
         project_path: &Path,
     ) -> Result<AgentStatus, Box<dyn std::error::Error + Send + Sync>> {
-        if let Ok(SessionId::Sdk(opencode_session_id)) = session_id.parse::<SessionId>() {
+        if let Ok(SessionId::Opencode(opencode_session_id)) = session_id.parse::<SessionId>() {
             if self.is_server_reachable().await {
                 let server_url = self.server_url.as_ref().unwrap();
                 let status_url = format!("{}/session/status", server_url);

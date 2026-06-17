@@ -39,7 +39,7 @@ pub trait Agent: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionId {
     Cli(u32),
-    Sdk(String),
+    Opencode(String),
 }
 
 impl FromStr for SessionId {
@@ -56,7 +56,7 @@ impl FromStr for SessionId {
                         .map_err(|e| format!("Failed to parse PID: {}", e))?;
                     return Ok(SessionId::Cli(pid));
                 }
-                "sdk" => return Ok(SessionId::Sdk(parts[1].to_string())),
+                "opencode" => return Ok(SessionId::Opencode(parts[1].to_string())),
                 _ => {}
             }
         }
@@ -71,10 +71,10 @@ impl FromStr for SessionId {
                 }
             }
         }
-        // sdk|{session_id}|task|{task_id}
-        if s.starts_with("sdk|") {
+        // opencode|{session_id}|task|{task_id}
+        if s.starts_with("opencode|") {
             if parts.len() >= 2 {
-                return Ok(SessionId::Sdk(parts[1].to_string()));
+                return Ok(SessionId::Opencode(parts[1].to_string()));
             }
         }
 
@@ -86,7 +86,7 @@ impl fmt::Display for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SessionId::Cli(pid) => write!(f, "cli|{}", pid),
-            SessionId::Sdk(sid) => write!(f, "sdk|{}", sid),
+            SessionId::Opencode(sid) => write!(f, "opencode|{}", sid),
         }
     }
 }
