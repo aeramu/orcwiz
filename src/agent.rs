@@ -179,6 +179,7 @@ impl Agent for OpencodeAgent {
             // Create a session: POST /session
             let create_url = format!("{}/session", server_url);
             let create_resp: serde_json::Value = client.post(&create_url)
+                .query(&[("directory", project_path.to_string_lossy().as_ref())])
                 .send()
                 .await?
                 .json()
@@ -251,7 +252,7 @@ impl Agent for OpencodeAgent {
     ) -> Result<AgentStatus, Box<dyn std::error::Error + Send + Sync>> {
         if session_id.starts_with("sdk_") {
             let parts: Vec<&str> = session_id.split('_').collect();
-            if parts.len() < 4 || parts[0] != "sdk" || parts[2] != "task" {
+            if parts.len() < 4 || parts[0] != "sdk" || parts[3] != "task" {
                 return Err("Invalid SDK session ID format".into());
             }
             let opencode_session_id = parts[1];
@@ -275,7 +276,10 @@ impl Agent for OpencodeAgent {
                 let server_url = self.server_url.as_ref().unwrap();
                 let client = reqwest::Client::new();
                 let list_url = format!("{}/session", server_url);
-                match client.get(&list_url).send().await {
+                match client.get(&list_url)
+                    .query(&[("directory", project_path.to_string_lossy().as_ref())])
+                    .send()
+                    .await {
                     Ok(resp) => {
                         if let Ok(sessions) = resp.json::<Vec<serde_json::Value>>().await {
                             let exists = sessions.iter().any(|s| {
