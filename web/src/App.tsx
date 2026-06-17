@@ -1,5 +1,5 @@
 import { createSignal, onMount, For } from 'solid-js';
-import type { Task, Column } from './types';
+import type { Task, Column, OrcwizConfig } from './types';
 import { KanbanColumn } from './components/KanbanColumn';
 import { AddTaskModal } from './components/AddTaskModal';
 import { TaskDetailsModal } from './components/TaskDetailsModal';
@@ -20,10 +20,22 @@ const COLUMNS_MAP: Record<string, Column> = COLUMNS.reduce((acc, col) => {
 
 function App() {
   const [tasks, setTasks] = createSignal<Task[]>([]);
+  const [config, setConfig] = createSignal<OrcwizConfig | null>(null);
   
   // Modal state
   const [showModal, setShowModal] = createSignal(false);
   const [selectedTask, setSelectedTask] = createSignal<Task | null>(null);
+
+  const fetchConfig = async () => {
+    try {
+      const res = await fetch('/api/config');
+      if (res.ok) {
+        setConfig(await res.json());
+      }
+    } catch (e) {
+      console.error("Failed to fetch config", e);
+    }
+  };
 
   const fetchTasks = async () => {
     try {
@@ -38,6 +50,7 @@ function App() {
 
   onMount(() => {
     fetchTasks();
+    fetchConfig();
     // Poll every 5 seconds for updates
     const interval = setInterval(fetchTasks, 5000);
     return () => clearInterval(interval);
@@ -234,6 +247,7 @@ function App() {
         columns={COLUMNS}
         onDelete={handleDeleteTask}
         onUpdate={handleUpdateTask}
+        config={config()}
       />
     </div>
   );

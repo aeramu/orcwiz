@@ -19,6 +19,7 @@ tower-http = { version = "0.6.11", features = ["fs", "cors"] }
 rust-embed = "8"
 mime_guess = "2"
 async-trait = "0.1"
+base64 = "0.22"
 
 [build-dependencies]
 which = "6"
