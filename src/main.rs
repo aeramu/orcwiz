@@ -1,13 +1,13 @@
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
-use std::time::Duration;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 mod config;
 mod db;
 mod runner;
 mod service;
 mod web;
+mod agent;
 
 #[derive(Parser)]
 #[command(name = "orcwiz")]
@@ -211,10 +211,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let db = Arc::new(db::Db::new()?);
             let runner = Arc::new(runner::Runner::new(config.opencode_server_url.clone()));
 
+            let agent: Arc<crate::agent::AgentEngine> = if config.agent_type == "opencode" {
+                Arc::new(crate::agent::AgentEngine::Opencode(crate::agent::OpencodeAgent::new(config.opencode_server_url.clone())))
+            } else {
+                let cmd_template = config.generic_cli_command.clone()
+                    .unwrap_or_else(|| "claude run {prompt}".to_string());
+                Arc::new(crate::agent::AgentEngine::Generic(crate::agent::GenericCliAgent::new(cmd_template)))
+            };
+
             info!("Starting Orcwiz Orchestrator on port {}", config.port);
 
             let db_clone = Arc::clone(&db);
             let runner_clone = Arc::clone(&runner);
+            let agent_clone = Arc::clone(&agent);
             tokio::spawn(async move {
                 loop {
                     if let Ok(tasks) = db_clone.list_tasks() {
@@ -230,18 +239,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     Ok(p) => p,
                                     Err(e) => {
                                         error!("Failed to prepare project for task {}: {}", task.id, e);
+                                        let _ = db_clone.update_task_status(task.id, "failed");
                                         continue;
                                     }
                                 };
 
                                 let db_for_runner = Arc::clone(&db_clone);
-                                let runner_for_spawn = Arc::clone(&runner_clone);
+                                let agent_for_spawn = Arc::clone(&agent_clone);
 
                                 tokio::spawn(async move {
-                                    if let Err(e) = runner_for_spawn.run_opencode(task_id, db_for_runner, project_path, title, desc).await {
-                                        error!("opencode execution failed for task {}: {}", task_id, e);
+                                    match agent_for_spawn.start_task(task_id, &project_path, &title, &desc).await {
+                                        Ok(sess_id) => {
+                                            info!("Successfully started task {} with session: {}", task_id, sess_id);
+                                            let _ = db_for_runner.update_task_session(task_id, &sess_id);
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to start task {}: {}", task_id, e);
+                                            let _ = db_for_runner.update_task_status(task_id, "failed");
+                                        }
                                     }
                                 });
+                            }
+
+                            if task.status == "in_progress" {
+                                if let Some(ref sess_id) = task.session_id {
+                                    let task_id = task.id;
+                                    let project_path = match runner_clone.prepare_project(&task.project_path).await {
+                                        Ok(p) => p,
+                                        Err(e) => {
+                                            error!("Failed to prepare project path to check status for task {}: {}", task.id, e);
+                                            continue;
+                                        }
+                                    };
+
+                                    let agent = Arc::clone(&agent_clone);
+                                    let db = Arc::clone(&db_clone);
+                                    let sess_id = sess_id.clone();
+                                    tokio::spawn(async move {
+                                        match agent.check_status(&sess_id, &project_path).await {
+                                            Ok(crate::agent::AgentStatus::Success) => {
+                                                info!("Task {} finished successfully", task_id);
+                                                let _ = db.update_task_status(task_id, "review");
+                                            }
+                                            Ok(crate::agent::AgentStatus::Failed(err)) => {
+                                                warn!("Task {} failed: {}", task_id, err);
+                                                let _ = db.update_task_status(task_id, "failed");
+                                            }
+                                            Ok(crate::agent::AgentStatus::Running) => {
+                                                // Still running
+                                            }
+                                            Err(e) => {
+                                                warn!("Error checking status for task {}: {}", task_id, e);
+                                            }
+                                        }
+                                    });
+                                }
                             }
                         }
                     }
