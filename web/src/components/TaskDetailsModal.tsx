@@ -342,6 +342,13 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
   const [errorMsg, setErrorMsg] = createSignal('');
   let messagesContainerRef: HTMLDivElement | undefined;
 
+  // Question tool signals
+  const [activeQuestion, setActiveQuestion] = createSignal<any | null>(null);
+  const [currentQuestionIndex, setCurrentQuestionIndex] = createSignal(0);
+  const [selectedAnswers, setSelectedAnswers] = createSignal<Record<number, string[]>>({});
+  const [customAnswer, setCustomAnswer] = createSignal<Record<number, string>>({});
+  const [isCustomSelected, setIsCustomSelected] = createSignal<Record<number, boolean>>({});
+
   // File browser & Editor signals
   const [activeTab, setActiveTab] = createSignal<'chat' | 'files'>('chat');
   const [currentPath, setCurrentPath] = createSignal('');
@@ -491,6 +498,36 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
     return headers;
   };
 
+  const fetchQuestions = async () => {
+    const serverUrl = props.config?.opencode_server_url;
+    const directory = props.task?.absolute_project_path || props.task?.project_path;
+    if (!serverUrl || !directory) return;
+
+    try {
+      const res = await fetch(`${serverUrl}/question?directory=${encodeURIComponent(directory)}`, {
+        headers: getHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const list = data.data || data;
+        if (Array.isArray(list) && list.length > 0) {
+          const currentQue = activeQuestion();
+          if (!currentQue || currentQue.id !== list[0].id) {
+            setActiveQuestion(list[0]);
+            setCurrentQuestionIndex(0);
+            setSelectedAnswers({});
+            setCustomAnswer({});
+            setIsCustomSelected({});
+          }
+        } else {
+          setActiveQuestion(null);
+        }
+      }
+    } catch (e) {
+      console.error("Error fetching questions", e);
+    }
+  };
+
   const fetchMessages = async () => {
     const serverUrl = props.config?.opencode_server_url;
     const sessId = rawSessionId();
@@ -573,6 +610,13 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
       setFileError('');
       setSaveSuccess(false);
 
+      // Reset question state
+      setActiveQuestion(null);
+      setCurrentQuestionIndex(0);
+      setSelectedAnswers({});
+      setCustomAnswer({});
+      setIsCustomSelected({});
+
       // Force fetch the directory files
       if (root) {
         fetchFiles(root);
@@ -593,17 +637,112 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
     if (props.isOpen && serverUrl && sessId && directory) {
       // 1. Initial fetch
       fetchMessages();
+      fetchQuestions();
+
+      const applyEventToMessages = (event: any) => {
+        const type = event.type;
+        const props = event.properties;
+
+        setMessages(prev => {
+          if (type === "message.updated") {
+            const info = props?.info;
+            if (!info) return prev;
+            
+            const idx = prev.findIndex(m => m.info?.id === info.id);
+            if (idx !== -1) {
+              const next = [...prev];
+              next[idx] = { ...next[idx], info };
+              return next;
+            } else {
+              return [...prev, { info, parts: [] }];
+            }
+          }
+
+          if (type === "message.removed") {
+            const messageID = props?.messageID;
+            if (!messageID) return prev;
+            return prev.filter(m => m.info?.id !== messageID);
+          }
+
+          if (type === "message.part.updated") {
+            const part = props?.part;
+            if (!part || !part.messageID) return prev;
+
+            const idx = prev.findIndex(m => m.info?.id === part.messageID);
+            if (idx === -1) return prev;
+
+            const msg = prev[idx];
+            const nextParts = [...(msg.parts || [])];
+            const pIdx = nextParts.findIndex(p => p.id === part.id);
+            if (pIdx !== -1) {
+              nextParts[pIdx] = { ...nextParts[pIdx], ...part };
+            } else {
+              nextParts.push(part);
+            }
+
+            const next = [...prev];
+            next[idx] = { ...msg, parts: nextParts };
+            return next;
+          }
+
+          if (type === "message.part.removed") {
+            const messageID = props?.messageID;
+            const partID = props?.partID;
+            if (!messageID || !partID) return prev;
+
+            const idx = prev.findIndex(m => m.info?.id === messageID);
+            if (idx === -1) return prev;
+
+            const msg = prev[idx];
+            const nextParts = (msg.parts || []).filter((p: any) => p.id !== partID);
+
+            const next = [...prev];
+            next[idx] = { ...msg, parts: nextParts };
+            return next;
+          }
+
+          if (type === "message.part.delta") {
+            const messageID = props?.messageID;
+            const partID = props?.partID;
+            const field = props?.field;
+            const delta = props?.delta;
+            if (!messageID || !partID || !field || delta === undefined) return prev;
+
+            const idx = prev.findIndex(m => m.info?.id === messageID);
+            if (idx === -1) return prev;
+
+            const msg = prev[idx];
+            const nextParts = [...(msg.parts || [])];
+            const pIdx = nextParts.findIndex(p => p.id === partID);
+            if (pIdx === -1) return prev;
+
+            const part = nextParts[pIdx];
+            const existingVal = part[field] || "";
+            nextParts[pIdx] = { ...part, [field]: existingVal + delta };
+
+            const next = [...prev];
+            next[idx] = { ...msg, parts: nextParts };
+            return next;
+          }
+
+          return prev;
+        });
+      };
 
       // 2. Set up SSE connection
       const controller = new AbortController();
-      let fetchTimer: number | undefined;
 
-      const onEvent = () => {
-        if (fetchTimer) return;
-        fetchTimer = window.setTimeout(() => {
-          fetchTimer = undefined;
-          fetchMessages();
-        }, 100);
+      const onEvent = (event: any) => {
+        const type = event?.type;
+        if (!type) return;
+
+        if (type.startsWith("question.")) {
+          void fetchQuestions();
+        }
+
+        if (type.startsWith("message.")) {
+          applyEventToMessages(event);
+        }
       };
 
       const connectSSE = async () => {
@@ -635,8 +774,21 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
               const chunks = buffer.split("\n\n");
               buffer = chunks.pop() ?? "";
 
-              if (chunks.length > 0) {
-                onEvent();
+              for (const chunk of chunks) {
+                const line = chunk.trim();
+                if (!line) continue;
+
+                if (line.startsWith("data:")) {
+                  try {
+                    const dataStr = line.substring(5).trim();
+                    const event = JSON.parse(dataStr);
+                    if (event) {
+                      onEvent(event);
+                    }
+                  } catch (e) {
+                    // Ignore JSON parsing errors for comments or malformed lines
+                  }
+                }
               }
             }
           } catch (error) {
@@ -649,10 +801,9 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
 
       void connectSSE();
 
-      // Clean up connection and timer on close or task switch
+      // Clean up connection on close or task switch
       return () => {
         controller.abort();
-        if (fetchTimer) window.clearTimeout(fetchTimer);
       };
     }
   });
@@ -931,6 +1082,277 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
                             <span>{errorMsg()}</span>
                             <button type="button" onClick={() => setErrorMsg('')} class="text-red-400 hover:text-red-200 font-semibold">Dismiss</button>
                           </div>
+                        </Show>
+
+                        {/* Question Area */}
+                        <Show when={activeQuestion()}>
+                          {(() => {
+                            const req = activeQuestion()!;
+                            const qIndex = currentQuestionIndex();
+                            const q = req.questions[qIndex];
+                            if (!q) return null;
+
+                            const isMulti = q.multiple === true;
+                            const isCustomAllowed = q.custom !== false; // default true
+
+                            // Get current picked options
+                            const picked = () => selectedAnswers()[qIndex] || [];
+                            
+                            // Toggle an option
+                            const handleToggleOption = (label: string) => {
+                              setSelectedAnswers(prev => {
+                                const current = prev[qIndex] || [];
+                                let next;
+                                if (isMulti) {
+                                  if (current.includes(label)) {
+                                    next = current.filter(x => x !== label);
+                                  } else {
+                                    next = [...current, label];
+                                  }
+                                } else {
+                                  next = [label];
+                                  // deselect custom if single selection
+                                  setIsCustomSelected(cPrev => ({ ...cPrev, [qIndex]: false }));
+                                }
+                                return { ...prev, [qIndex]: next };
+                              });
+                            };
+
+                            // Toggle custom answer
+                            const handleToggleCustom = () => {
+                              setIsCustomSelected(prev => {
+                                const next = !prev[qIndex];
+                                if (next && !isMulti) {
+                                  // deselect other options if single selection
+                                  setSelectedAnswers(aPrev => ({ ...aPrev, [qIndex]: [] }));
+                                }
+                                return { ...prev, [qIndex]: next };
+                              });
+                            };
+
+                            const isCustomActive = () => isCustomSelected()[qIndex] === true;
+                            const customVal = () => customAnswer()[qIndex] || "";
+
+                            const handleCustomValChange = (val: string) => {
+                              setCustomAnswer(prev => ({ ...prev, [qIndex]: val }));
+                              if (!isCustomActive()) {
+                                handleToggleCustom();
+                              }
+                            };
+
+                            const hasAnswered = () => {
+                              if (picked().length > 0) return true;
+                              if (isCustomActive() && customVal().trim().length > 0) return true;
+                              return false;
+                            };
+
+                            const isLast = qIndex === req.questions.length - 1;
+
+                            const handleNext = () => {
+                              if (isLast) {
+                                handleSubmitAnswers();
+                              } else {
+                                setCurrentQuestionIndex(qIndex + 1);
+                              }
+                            };
+
+                            const handleBack = () => {
+                              if (qIndex > 0) {
+                                setCurrentQuestionIndex(qIndex - 1);
+                              }
+                            };
+
+                            const handleSubmitAnswers = async () => {
+                              const serverUrl = props.config?.opencode_server_url;
+                              const directory = props.task?.absolute_project_path || props.task?.project_path;
+                              if (!serverUrl || !directory) return;
+
+                              const answers = req.questions.map((_: any, i: number) => {
+                                const opts = selectedAnswers()[i] || [];
+                                const customOn = isCustomSelected()[i] === true;
+                                const customText = (customAnswer()[i] || "").trim();
+                                
+                                let finalAns = [...opts];
+                                if (customOn && customText) {
+                                  finalAns.push(customText);
+                                }
+                                return finalAns;
+                              });
+
+                              try {
+                                const res = await fetch(`${serverUrl}/question/${req.id}/reply?directory=${encodeURIComponent(directory)}`, {
+                                  method: 'POST',
+                                  headers: getHeaders(),
+                                  body: JSON.stringify({ answers }),
+                                });
+                                if (res.ok) {
+                                  setActiveQuestion(null);
+                                  setCurrentQuestionIndex(0);
+                                  setSelectedAnswers({});
+                                  setCustomAnswer({});
+                                  setIsCustomSelected({});
+                                  fetchMessages();
+                                } else {
+                                  const err = await res.json().catch(() => ({}));
+                                  setErrorMsg(err.message || `Failed to submit answer (HTTP ${res.status})`);
+                                }
+                              } catch (err: any) {
+                                setErrorMsg(err.message || "Failed to submit answers.");
+                              }
+                            };
+
+                            const handleDismiss = async () => {
+                              const serverUrl = props.config?.opencode_server_url;
+                              const directory = props.task?.absolute_project_path || props.task?.project_path;
+                              if (!serverUrl || !directory) return;
+
+                              try {
+                                const res = await fetch(`${serverUrl}/question/${req.id}/reject?directory=${encodeURIComponent(directory)}`, {
+                                  method: 'POST',
+                                  headers: getHeaders(),
+                                });
+                                if (res.ok) {
+                                  setActiveQuestion(null);
+                                  setCurrentQuestionIndex(0);
+                                  setSelectedAnswers({});
+                                  setCustomAnswer({});
+                                  setIsCustomSelected({});
+                                  fetchMessages();
+                                } else {
+                                  const err = await res.json().catch(() => ({}));
+                                  setErrorMsg(err.message || `Failed to reject question (HTTP ${res.status})`);
+                                }
+                              } catch (err: any) {
+                                setErrorMsg(err.message || "Failed to reject question.");
+                              }
+                            };
+
+                            return (
+                              <div class="m-4 p-4 bg-gray-950 border border-amber-500/35 rounded-xl shadow-lg flex flex-col gap-3 shrink-0 animate-fade-in">
+                                {/* Header */}
+                                <div class="flex items-center justify-between border-b border-gray-800 pb-2">
+                                  <div class="flex items-center gap-2">
+                                    <span class="text-amber-500 font-bold text-xs flex items-center gap-1.5 font-sans">
+                                      <span class="text-xs">❓</span> OpenCode Question
+                                    </span>
+                                    <span class="text-[9px] bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded-full font-sans font-semibold">
+                                      {qIndex + 1} of {req.questions.length}
+                                    </span>
+                                  </div>
+                                  <button 
+                                    type="button" 
+                                    onClick={handleDismiss}
+                                    class="text-[10px] text-gray-500 hover:text-gray-300 font-semibold transition-colors font-sans"
+                                  >
+                                    Dismiss
+                                  </button>
+                                </div>
+
+                                {/* Question Text */}
+                                <div class="text-xs font-semibold text-gray-200 leading-normal select-text">
+                                  {q.question}
+                                </div>
+
+                                {/* Options List */}
+                                <div class="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                                  <For each={q.options}>
+                                    {(opt) => {
+                                      const isPicked = () => picked().includes(opt.label);
+                                      return (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleToggleOption(opt.label)}
+                                          class={`w-full text-left p-2.5 rounded-lg border text-[11px] transition-all flex items-start gap-2.5 ${
+                                            isPicked() 
+                                              ? 'bg-indigo-600/15 border-indigo-500/80 text-indigo-200' 
+                                              : 'bg-gray-900/40 border-gray-800/80 text-gray-300 hover:bg-gray-800/60 hover:border-gray-700/60'
+                                          }`}
+                                        >
+                                          {/* Mark Indicator */}
+                                          <div class="mt-0.5 shrink-0 flex items-center justify-center">
+                                            <div class={`w-3.5 h-3.5 rounded flex items-center justify-center border ${
+                                              isPicked() 
+                                                ? 'bg-indigo-600 border-indigo-500' 
+                                                : 'border-gray-700'
+                                            }`}>
+                                              <Show when={isPicked()}>
+                                                <span class="text-[8px] text-white">✓</span>
+                                              </Show>
+                                            </div>
+                                          </div>
+                                          <div>
+                                            <div class="font-bold">{opt.label}</div>
+                                            {opt.description && <div class="text-[9px] text-gray-500 mt-0.5 font-normal leading-normal">{opt.description}</div>}
+                                          </div>
+                                        </button>
+                                      );
+                                    }}
+                                  </For>
+
+                                  {/* Custom option */}
+                                  <Show when={isCustomAllowed}>
+                                    <div class={`p-2.5 rounded-lg border text-[11px] transition-all space-y-2 ${
+                                      isCustomActive() 
+                                        ? 'bg-indigo-600/15 border-indigo-500/80' 
+                                        : 'bg-gray-900/40 border-gray-800/80'
+                                    }`}>
+                                      <button
+                                        type="button"
+                                        onClick={handleToggleCustom}
+                                        class="w-full text-left flex items-start gap-2.5 text-gray-300 hover:text-white"
+                                      >
+                                        <div class="mt-0.5 shrink-0 flex items-center justify-center">
+                                          <div class={`w-3.5 h-3.5 rounded flex items-center justify-center border ${
+                                            isCustomActive() 
+                                              ? 'bg-indigo-600 border-indigo-500' 
+                                              : 'border-gray-700'
+                                          }`}>
+                                            {isCustomActive() && <span class="text-[8px] text-white">✓</span>}
+                                          </div>
+                                        </div>
+                                        <span class="font-bold">Type your own answer</span>
+                                      </button>
+                                      
+                                      <Show when={isCustomActive()}>
+                                        <textarea
+                                          placeholder="Enter custom response..."
+                                          value={customVal()}
+                                          onInput={(e) => handleCustomValChange(e.currentTarget.value)}
+                                          rows="1.5"
+                                          class="w-full bg-gray-950 border border-gray-800 rounded p-2 text-[10px] text-gray-200 placeholder-gray-600 focus:outline-none focus:border-indigo-500 transition-colors resize-none font-sans"
+                                        />
+                                      </Show>
+                                    </div>
+                                  </Show>
+                                </div>
+
+                                {/* Footer navigation */}
+                                <div class="flex items-center justify-between pt-1.5 border-t border-gray-800/60">
+                                  <button
+                                    type="button"
+                                    onClick={handleBack}
+                                    disabled={qIndex === 0}
+                                    class="px-3 py-1 text-[10px] font-bold rounded bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors disabled:opacity-40 disabled:hover:bg-gray-800 font-sans"
+                                  >
+                                    Back
+                                  </button>
+                                  
+                                  <button
+                                    type="button"
+                                    onClick={handleNext}
+                                    disabled={!hasAnswered()}
+                                    class={`px-3 py-1 text-[10px] font-bold rounded transition-all shadow ${
+                                      hasAnswered() 
+                                        ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-500/10 font-sans' 
+                                        : 'bg-gray-800 text-gray-500 cursor-not-allowed font-sans'
+                                    }`}
+                                  >
+                                    {isLast ? 'Submit Answers' : 'Next'}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </Show>
 
                         {/* Prompt Input */}
