@@ -9,6 +9,16 @@ pub enum AgentStatus {
     Failed(String),
 }
 
+fn is_pid_running(pid: u32) -> bool {
+    let mut cmd = std::process::Command::new("kill");
+    cmd.arg("-0").arg(pid.to_string());
+    if let Ok(status) = cmd.status() {
+        status.success()
+    } else {
+        false
+    }
+}
+
 pub trait Agent: Send + Sync {
     /// Starts the agent execution for a task in the background.
     /// Returns a session identifier (e.g. PID or OpenCode session ID).
@@ -18,6 +28,7 @@ pub trait Agent: Send + Sync {
         project_path: &Path,
         title: &str,
         description: &str,
+        on_complete: Box<dyn FnOnce(AgentStatus) + Send + 'static>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Checks the current status of a running task by session ID.
@@ -45,89 +56,56 @@ impl Agent for GenericCliAgent {
         project_path: &Path,
         title: &str,
         description: &str,
+        on_complete: Box<dyn FnOnce(AgentStatus) + Send + 'static>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let orcwiz_dir = project_path.join(".orcwiz");
-        std::fs::create_dir_all(&orcwiz_dir)?;
-
-        let log_path = orcwiz_dir.join(format!("task_{}.log", task_id));
-        let status_path = orcwiz_dir.join(format!("task_{}.status", task_id));
-
-        if status_path.exists() {
-            let _ = std::fs::remove_file(&status_path);
-        }
-
         let prompt = format!("Task: {}\nDescription: {}", title, description);
         let run_cmd = self.command_template.replace("{prompt}", &prompt);
 
-        let shell_cmd = format!(
-            "({}) > '{}' 2>&1; echo $? > '{}'",
-            run_cmd,
-            log_path.to_string_lossy(),
-            status_path.to_string_lossy()
-        );
-
         info!("Spawning generic CLI command in background: {}", run_cmd);
         
-        let child = Command::new("sh")
+        let mut child = Command::new("sh")
             .arg("-c")
-            .arg(&shell_cmd)
+            .arg(&run_cmd)
             .current_dir(project_path)
             .spawn()?;
 
         let pid = child.id().ok_or("Failed to get spawned process ID")?;
-        Ok(format!("pid_{}_task_{}", pid, task_id))
+        let session_id = format!("pid_{}_task_{}", pid, task_id);
+        
+        tokio::spawn(async move {
+            let status = match child.wait().await {
+                Ok(s) => {
+                    if s.success() {
+                        AgentStatus::Success
+                    } else {
+                        AgentStatus::Failed(format!("Exited with code {}", s.code().unwrap_or(-1)))
+                    }
+                }
+                Err(e) => AgentStatus::Failed(e.to_string()),
+            };
+            on_complete(status);
+        });
+
+        Ok(session_id)
     }
 
     async fn check_status(
         &self,
         session_id: &str,
-        project_path: &Path,
+        _project_path: &Path,
     ) -> Result<AgentStatus, Box<dyn std::error::Error + Send + Sync>> {
-        let parts: Vec<&str> = session_id.split('_').collect();
-        if parts.len() < 4 || parts[0] != "pid" || parts[2] != "task" {
-            return Err("Invalid generic session ID format".into());
-        }
-        let pid_str = parts[1];
-        let task_id_str = parts[3];
-        
-        let status_path = project_path
-            .join(".orcwiz")
-            .join(format!("task_{}.status", task_id_str));
-
-        if status_path.exists() {
-            let content = std::fs::read_to_string(&status_path)?;
-            let exit_code = content.trim();
-            if exit_code == "0" {
-                return Ok(AgentStatus::Success);
-            } else {
-                return Ok(AgentStatus::Failed(format!("Exited with code {}", exit_code)));
-            }
-        }
-
-        // Status file does not exist, check if process is still running
-        let mut kill_cmd = Command::new("kill");
-        kill_cmd.arg("-0").arg(pid_str);
-        
-        let is_running = match kill_cmd.status().await {
-            Ok(status) => status.success(),
-            Err(_) => false,
-        };
-
-        if is_running {
-            Ok(AgentStatus::Running)
-        } else {
-            // Double check if status file appeared in the meantime
-            if status_path.exists() {
-                let content = std::fs::read_to_string(&status_path)?;
-                let exit_code = content.trim();
-                if exit_code == "0" {
-                    return Ok(AgentStatus::Success);
-                } else {
-                    return Ok(AgentStatus::Failed(format!("Exited with code {}", exit_code)));
+        // Parse PID from: pid_{pid}_task_{task_id}
+        if session_id.starts_with("pid_") {
+            let parts: Vec<&str> = session_id.split('_').collect();
+            if parts.len() >= 2 {
+                if let Ok(pid) = parts[1].parse::<u32>() {
+                    if is_pid_running(pid) {
+                        return Ok(AgentStatus::Running);
+                    }
                 }
             }
-            Ok(AgentStatus::Failed("Process died unexpectedly".to_string()))
         }
+        Ok(AgentStatus::Failed("Session lost".into()))
     }
 }
 
@@ -169,6 +147,7 @@ impl Agent for OpencodeAgent {
         project_path: &Path,
         title: &str,
         description: &str,
+        on_complete: Box<dyn FnOnce(AgentStatus) + Send + 'static>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         if self.is_server_reachable().await {
             let server_url = self.server_url.as_ref().unwrap();
@@ -192,22 +171,14 @@ impl Agent for OpencodeAgent {
 
             info!("Created OpenCode server session: {}", session_id);
 
+            let session_id_str = format!("sdk|{}|task|{}", session_id, task_id);
             let server_url_clone = server_url.clone();
-            let session_id_clone = session_id.clone();
             let prompt = format!("Task: {}\nDescription: {}", title, description);
-            
-            let orcwiz_dir = project_path.join(".orcwiz");
-            let log_path = orcwiz_dir.join(format!("task_{}.log", task_id));
-            let status_path = orcwiz_dir.join(format!("task_{}.status", task_id));
-
-            std::fs::create_dir_all(&orcwiz_dir)?;
-            if status_path.exists() {
-                let _ = std::fs::remove_file(&status_path);
-            }
+            let session_id_payload = session_id.clone();
 
             tokio::spawn(async move {
                 let client = reqwest::Client::new();
-                let message_url = format!("{}/session/{}/message", server_url_clone, session_id_clone);
+                let message_url = format!("{}/session/{}/message", server_url_clone, session_id_payload);
                 
                 let payload = serde_json::json!({
                     "parts": [
@@ -218,31 +189,26 @@ impl Agent for OpencodeAgent {
                     ]
                 });
 
-                match client.post(&message_url).json(&payload).send().await {
+                let status = match client.post(&message_url).json(&payload).send().await {
                     Ok(resp) => {
                         if resp.status().is_success() {
-                            let text = resp.text().await.unwrap_or_default();
-                            let _ = std::fs::write(&log_path, format!("Task complete.\nResponse: {}", text));
-                            let _ = std::fs::write(&status_path, "0");
+                            AgentStatus::Success
                         } else {
-                            let status = resp.status();
-                            let text = resp.text().await.unwrap_or_default();
-                            let _ = std::fs::write(&log_path, format!("HTTP Error {}: {}", status, text));
-                            let _ = std::fs::write(&status_path, "1");
+                            AgentStatus::Failed(format!("HTTP Error {}", resp.status()))
                         }
                     }
                     Err(e) => {
-                        let _ = std::fs::write(&log_path, format!("Error running session chat: {}", e));
-                        let _ = std::fs::write(&status_path, "1");
+                        AgentStatus::Failed(e.to_string())
                     }
-                }
+                };
+                on_complete(status);
             });
 
-            return Ok(format!("sdk_{}_task_{}", session_id, task_id));
+            return Ok(session_id_str);
         }
 
         info!("OpenCode server is unreachable. Falling back to local CLI...");
-        self.generic_cli.start_task(task_id, project_path, title, description).await
+        self.generic_cli.start_task(task_id, project_path, title, description, on_complete).await
     }
 
     async fn check_status(
@@ -250,27 +216,12 @@ impl Agent for OpencodeAgent {
         session_id: &str,
         project_path: &Path,
     ) -> Result<AgentStatus, Box<dyn std::error::Error + Send + Sync>> {
-        if session_id.starts_with("sdk_") {
-            let parts: Vec<&str> = session_id.split('_').collect();
-            if parts.len() < 4 || parts[0] != "sdk" || parts[3] != "task" {
+        if session_id.starts_with("sdk|") {
+            let parts: Vec<&str> = session_id.split('|').collect();
+            if parts.len() < 4 || parts[0] != "sdk" || parts[2] != "task" {
                 return Err("Invalid SDK session ID format".into());
             }
             let opencode_session_id = parts[1];
-            let task_id_str = parts[3];
-
-            let status_path = project_path
-                .join(".orcwiz")
-                .join(format!("task_{}.status", task_id_str));
-
-            if status_path.exists() {
-                let content = std::fs::read_to_string(&status_path)?;
-                let exit_code = content.trim();
-                if exit_code == "0" {
-                    return Ok(AgentStatus::Success);
-                } else {
-                    return Ok(AgentStatus::Failed(format!("Exited with code {}", exit_code)));
-                }
-            }
 
             if self.is_server_reachable().await {
                 let server_url = self.server_url.as_ref().unwrap();
@@ -319,10 +270,11 @@ impl AgentEngine {
         project_path: &Path,
         title: &str,
         description: &str,
+        on_complete: Box<dyn FnOnce(AgentStatus) + Send + 'static>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         match self {
-            Self::Opencode(a) => a.start_task(task_id, project_path, title, description).await,
-            Self::Generic(a) => a.start_task(task_id, project_path, title, description).await,
+            Self::Opencode(a) => a.start_task(task_id, project_path, title, description, on_complete).await,
+            Self::Generic(a) => a.start_task(task_id, project_path, title, description, on_complete).await,
         }
     }
 

@@ -245,10 +245,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 };
 
                                 let db_for_runner = Arc::clone(&db_clone);
+                                let db_for_callback = Arc::clone(&db_clone);
                                 let agent_for_spawn = Arc::clone(&agent_clone);
 
+                                let on_complete = Box::new(move |status: crate::agent::AgentStatus| {
+                                    match status {
+                                        crate::agent::AgentStatus::Success => {
+                                            info!("Task {} finished successfully", task_id);
+                                            let _ = db_for_callback.update_task_status(task_id, "review");
+                                        }
+                                        crate::agent::AgentStatus::Failed(err) => {
+                                            warn!("Task {} failed: {}", task_id, err);
+                                            let _ = db_for_callback.update_task_status(task_id, "failed");
+                                        }
+                                        crate::agent::AgentStatus::Running => {}
+                                    }
+                                });
+
                                 tokio::spawn(async move {
-                                    match agent_for_spawn.start_task(task_id, &project_path, &title, &desc).await {
+                                    match agent_for_spawn.start_task(task_id, &project_path, &title, &desc, on_complete).await {
                                         Ok(sess_id) => {
                                             info!("Successfully started task {} with session: {}", task_id, sess_id);
                                             let _ = db_for_runner.update_task_session(task_id, &sess_id);
