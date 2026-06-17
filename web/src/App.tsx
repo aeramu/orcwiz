@@ -12,12 +12,18 @@ type Task = {
 };
 
 const COLUMNS = [
-  { id: 'backlog', title: 'Backlog' },
-  { id: 'todo', title: 'To Do' },
-  { id: 'in_progress', title: 'In Progress' },
-  { id: 'review', title: 'Review' },
-  { id: 'done', title: 'Done' }
+  { id: 'backlog', title: 'Backlog', color: 'border-t-gray-500', bg: 'bg-gray-700/50 text-gray-300 border-gray-700/50', border: 'border-l-gray-500', badgeClass: 'bg-gray-800 text-gray-300 border-gray-700' },
+  { id: 'todo', title: 'To Do', color: 'border-t-blue-500', bg: 'bg-blue-900/50 text-blue-300 border-blue-700/50', border: 'border-l-blue-500', badgeClass: 'bg-blue-900/40 text-blue-300 border-blue-700/50' },
+  { id: 'in_progress', title: 'In Progress', color: 'border-t-amber-500', bg: 'bg-amber-900/50 text-amber-300 border-amber-700/50', border: 'border-l-amber-500', badgeClass: 'bg-amber-900/40 text-amber-300 border-amber-700/50' },
+  { id: 'review', title: 'Review', color: 'border-t-purple-500', bg: 'bg-purple-900/50 text-purple-300 border-purple-700/50', border: 'border-l-purple-500', badgeClass: 'bg-purple-900/40 text-purple-300 border-purple-700/50' },
+  { id: 'done', title: 'Done', color: 'border-t-green-500', bg: 'bg-green-900/50 text-green-300 border-green-700/50', border: 'border-l-green-500', badgeClass: 'bg-green-900/40 text-green-300 border-green-700/50' },
+  { id: 'failed', title: 'Failed', color: 'border-t-red-500', bg: 'bg-red-900/50 text-red-300 border-red-700/50', border: 'border-l-red-500', badgeClass: 'bg-red-900/40 text-red-300 border-red-700/50' }
 ];
+
+const COLUMNS_MAP: Record<string, typeof COLUMNS[number]> = COLUMNS.reduce((acc, col) => {
+  acc[col.id] = col;
+  return acc;
+}, {} as Record<string, typeof COLUMNS[number]>);
 
 function App() {
   const [tasks, setTasks] = createSignal<Task[]>([]);
@@ -238,13 +244,13 @@ function App() {
           <For each={COLUMNS}>
             {(col) => (
               <div 
-                class="w-80 flex flex-col bg-gray-800/50 border border-gray-700/50 rounded-xl h-[calc(100vh-140px)] overflow-hidden"
+                class={`w-80 flex flex-col bg-gray-800/50 border border-gray-700/50 border-t-2 ${col.color} rounded-xl h-[calc(100vh-140px)] overflow-hidden`}
                 onDragOver={onDragOver}
                 onDrop={(e) => onDrop(e, col.id)}
               >
                 <div class="p-4 border-b border-gray-700/50 flex justify-between items-center bg-gray-800/80 backdrop-blur-sm">
                   <h2 class="font-semibold text-gray-200">{col.title}</h2>
-                  <span class="bg-gray-700 text-gray-300 text-xs py-1 px-2 rounded-full">
+                  <span class={`text-xs py-1 px-2 rounded-full border ${col.bg}`}>
                     {tasks().filter(t => t.status === col.id).length}
                   </span>
                 </div>
@@ -256,11 +262,11 @@ function App() {
                         draggable="true"
                         onClick={() => setSelectedTask(task)}
                         onDragStart={(e) => onDragStart(e, task.id)}
-                        class="bg-gray-800 border border-gray-700 p-4 rounded-lg shadow-md cursor-pointer hover:border-indigo-500/50 transition-colors group relative"
+                        class={`bg-gray-800 border-y border-r border-l-4 border-gray-700 ${COLUMNS_MAP[task.status]?.border || 'border-l-gray-700'} p-4 rounded-lg shadow-md cursor-pointer hover:border-indigo-500/50 transition-colors group relative`}
                       >
                         <div class="flex justify-between items-start mb-2">
                           <h3 class="font-medium text-gray-100 leading-tight pr-6">{task.title}</h3>
-                          <Show when={col.id === 'backlog'}>
+                          <Show when={col.id === 'backlog' || col.id === 'failed'}>
                             <button 
                               onClick={(e) => { e.stopPropagation(); runTask(task.id); }}
                               class="absolute top-3 right-3 text-gray-400 hover:text-green-400 transition-colors"
@@ -304,14 +310,28 @@ function App() {
                                 class="bg-gray-900/60 border border-gray-700/60 rounded px-2.5 py-1.5 flex items-center justify-between group/subtask hover:bg-gray-700/60 transition-colors"
                               >
                                 <div class="flex items-center gap-2 overflow-hidden">
-                                  <span class="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0"></span>
+                                  <span class={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                    subtask.status === 'failed' ? 'bg-red-500' :
+                                    subtask.status === 'done' ? 'bg-green-500' :
+                                    subtask.status === 'review' ? 'bg-purple-500' :
+                                    subtask.status === 'in_progress' ? 'bg-amber-500' :
+                                    subtask.status === 'todo' ? 'bg-blue-500' :
+                                    'bg-gray-500'
+                                  }`}></span>
                                   <span class="text-xs text-gray-300 truncate">{subtask.title}</span>
                                 </div>
                                 <div class="flex items-center gap-2 shrink-0">
-                                  <span class="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">
+                                  <span class={`text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded border ${
+                                    subtask.status === 'failed' ? 'bg-red-950/40 text-red-400 border-red-900/50' :
+                                    subtask.status === 'done' ? 'bg-green-950/40 text-green-400 border-green-900/50' :
+                                    subtask.status === 'review' ? 'bg-purple-950/40 text-purple-400 border-purple-900/50' :
+                                    subtask.status === 'in_progress' ? 'bg-amber-950/40 text-amber-400 border-amber-900/50' :
+                                    subtask.status === 'todo' ? 'bg-blue-950/40 text-blue-400 border-blue-900/50' :
+                                    'bg-gray-800 text-gray-400 border-gray-700'
+                                  }`}>
                                     {subtask.status.replace('_', ' ')}
                                   </span>
-                                  <Show when={subtask.status === 'backlog'}>
+                                  <Show when={subtask.status === 'backlog' || subtask.status === 'failed'}>
                                     <button 
                                       onClick={(e) => { e.stopPropagation(); runTask(subtask.id); }}
                                       class="text-gray-500 hover:text-green-400 transition-colors opacity-0 group-hover/subtask:opacity-100"
@@ -471,7 +491,9 @@ function App() {
             <div class="p-6 space-y-6">
               <div class="flex justify-between items-center">
                 <div class="flex gap-4">
-                  <span class="bg-indigo-900/50 text-indigo-300 border border-indigo-700/50 text-xs font-medium px-2.5 py-1 rounded">
+                  <span class={`border text-xs font-medium px-2.5 py-1 rounded ${
+                    COLUMNS_MAP[selectedTask()?.status || '']?.badgeClass || 'bg-indigo-900/50 text-indigo-300 border-indigo-700/50'
+                  }`}>
                     {COLUMNS.find(c => c.id === selectedTask()?.status)?.title}
                   </span>
                   <span class="text-xs text-gray-400 flex items-center">
@@ -486,7 +508,7 @@ function App() {
                     Created: {new Date(selectedTask()?.created_at || '').toLocaleString()}
                   </span>
                 </div>
-                <Show when={selectedTask()?.status === 'backlog' && !isEditing()}>
+                <Show when={(selectedTask()?.status === 'backlog' || selectedTask()?.status === 'failed') && !isEditing()}>
                   <div class="flex space-x-2">
                     <button 
                       onClick={handleDeleteTask}

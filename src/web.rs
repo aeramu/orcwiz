@@ -132,15 +132,15 @@ async fn update_details(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<UpdateDetailsRequest>,
 ) -> axum::response::Response {
-    // Only allow update if status is backlog
+    // Only allow update if status is backlog or failed
     let task = match state.db.get_task(id) {
         Ok(Some(t)) => t,
         Ok(None) => return (axum::http::StatusCode::NOT_FOUND, "Task not found").into_response(),
         Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    if task.status != "backlog" {
-        return (axum::http::StatusCode::BAD_REQUEST, "Task can only be updated if it is in the backlog state").into_response();
+    if task.status != "backlog" && task.status != "failed" {
+        return (axum::http::StatusCode::BAD_REQUEST, "Task can only be updated if it is in the backlog or failed state").into_response();
     }
 
     match state.db.update_task_details(
@@ -165,8 +165,8 @@ async fn delete_task(
         Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    if task.status != "backlog" {
-        return (axum::http::StatusCode::BAD_REQUEST, "Task can only be deleted if it is in the backlog state").into_response();
+    if task.status != "backlog" && task.status != "failed" {
+        return (axum::http::StatusCode::BAD_REQUEST, "Task can only be deleted if it is in the backlog or failed state").into_response();
     }
 
     match state.db.delete_task(id) {
