@@ -14,13 +14,114 @@ type FileEntry = {
   size: number;
 };
 
+type FileTreeItemProps = {
+  entry: FileEntry;
+  depth: number;
+  expandedPaths: () => Record<string, boolean>;
+  directoryContents: () => Record<string, FileEntry[]>;
+  selectedFile: () => FileEntry | null;
+  onSelectFile: (entry: FileEntry) => void;
+  onToggleExpand: (path: string) => void;
+};
+
+function FileTreeItem(props: FileTreeItemProps) {
+  const isExpanded = () => !!props.expandedPaths()[props.entry.path];
+  const children = () => props.directoryContents()[props.entry.path] || [];
+
+  return (
+    <div class="select-none">
+      <Show
+        when={props.entry.is_dir}
+        fallback={
+          <button
+            type="button"
+            onClick={() => props.onSelectFile(props.entry)}
+            style={{ "padding-left": `${props.depth * 12 + 28}px` }}
+            class={`w-full text-left py-1.5 pr-2 text-xs rounded flex items-center gap-1.5 truncate transition-all duration-150 ${
+              props.selectedFile()?.path === props.entry.path
+                ? 'bg-indigo-600/35 text-indigo-200 font-semibold'
+                : 'text-gray-300 hover:bg-gray-800/60 hover:text-white'
+            }`}
+          >
+            <span class="text-xs opacity-70 shrink-0">📄</span>
+            <span class="truncate" title={props.entry.name}>{props.entry.name}</span>
+          </button>
+        }
+      >
+        <div class="flex flex-col">
+          <button
+            type="button"
+            onClick={() => props.onToggleExpand(props.entry.path)}
+            style={{ "padding-left": `${props.depth * 12 + 10}px` }}
+            class="w-full text-left py-1.5 pr-2 text-xs text-gray-300 hover:bg-gray-800/60 hover:text-white rounded flex items-center gap-1.5 truncate transition-all duration-150 font-medium"
+          >
+            <span 
+              class="text-[8px] text-gray-500 w-3 h-3 flex items-center justify-center transition-transform duration-200 shrink-0" 
+              style={{ transform: isExpanded() ? 'rotate(90deg)' : 'rotate(0deg)' }}
+            >
+              ▶
+            </span>
+            <span class="text-xs opacity-80 shrink-0">
+              {isExpanded() ? '📂' : '📁'}
+            </span>
+            <span class="truncate" title={props.entry.name}>{props.entry.name}</span>
+          </button>
+          
+          <Show when={isExpanded()}>
+            <div class="mt-0.5 flex flex-col">
+              <Show 
+                when={props.directoryContents()[props.entry.path]} 
+                fallback={
+                  <div 
+                    style={{ "padding-left": `${(props.depth + 1) * 12 + 28}px` }}
+                    class="py-1 text-[10px] text-gray-500 italic"
+                  >
+                    Loading...
+                  </div>
+                }
+              >
+                <Show 
+                  when={children().length > 0}
+                  fallback={
+                    <div 
+                      style={{ "padding-left": `${(props.depth + 1) * 12 + 28}px` }}
+                      class="py-1 text-[10px] text-gray-500 italic"
+                    >
+                      No files
+                    </div>
+                  }
+                >
+                  <For each={children()}>
+                    {(child) => (
+                      <FileTreeItem
+                        entry={child}
+                        depth={props.depth + 1}
+                        expandedPaths={props.expandedPaths}
+                        directoryContents={props.directoryContents}
+                        selectedFile={props.selectedFile}
+                        onSelectFile={props.onSelectFile}
+                        onToggleExpand={props.onToggleExpand}
+                      />
+                    )}
+                  </For>
+                </Show>
+              </Show>
+            </div>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
 export function FileExplorer(props: FileExplorerProps) {
-  const [currentPath, setCurrentPath] = createSignal('');
+  const [rootPath, setRootPath] = createSignal('');
   const [selectedFile, setSelectedFile] = createSignal<FileEntry | null>(null);
   const [fileContent, setFileContent] = createSignal('');
   const [isSavingFile, setIsSavingFile] = createSignal(false);
   const [isFileLoading, setIsFileLoading] = createSignal(false);
-  const [fileList, setFileList] = createSignal<FileEntry[]>([]);
+  const [directoryContents, setDirectoryContents] = createSignal<Record<string, FileEntry[]>>({});
+  const [expandedPaths, setExpandedPaths] = createSignal<Record<string, boolean>>({});
   const [fileError, setFileError] = createSignal('');
   const [saveSuccess, setSaveSuccess] = createSignal(false);
 
@@ -31,12 +132,12 @@ export function FileExplorer(props: FileExplorerProps) {
     return getRelativePath(fullPath, root);
   };
 
-  const fetchFiles = (path: string) => {
+  const fetchDirectory = (path: string) => {
     fetch(`/api/files?path=${encodeURIComponent(path)}`)
       .then(async (res) => {
         if (res.ok) {
           const data = await res.json();
-          setFileList(data);
+          setDirectoryContents(prev => ({ ...prev, [path]: data }));
           setFileError('');
           return;
         }
@@ -46,6 +147,14 @@ export function FileExplorer(props: FileExplorerProps) {
       .catch((e) => {
         setFileError(e.message || "Failed to fetch directory contents.");
       });
+  };
+
+  const toggleExpand = (path: string) => {
+    const isExpanded = !expandedPaths()[path];
+    setExpandedPaths(prev => ({ ...prev, [path]: isExpanded }));
+    if (isExpanded && !directoryContents()[path]) {
+      fetchDirectory(path);
+    }
   };
 
   const selectFile = (entry: FileEntry) => {
@@ -94,12 +203,18 @@ export function FileExplorer(props: FileExplorerProps) {
           setSaveSuccess(true);
           setTimeout(() => setSaveSuccess(false), 3000);
           
-          // Refresh the file list of the current directory to show updated details
-          fetchFiles(currentPath());
-          
-          // Local update to the active file's metadata (especially size)
+          // Refresh the parent directory of the saved file to show updated details
           const activeFile = selectedFile();
           if (activeFile) {
+            const lastSlash = activeFile.path.lastIndexOf('/');
+            if (lastSlash !== -1) {
+              const parentPath = activeFile.path.substring(0, lastSlash);
+              fetchDirectory(parentPath);
+            } else {
+              fetchDirectory(rootPath());
+            }
+            
+            // Local update to the active file's metadata (especially size)
             setSelectedFile({
               ...activeFile,
               size: new Blob([fileContent()]).size
@@ -136,15 +251,16 @@ export function FileExplorer(props: FileExplorerProps) {
     const isOpen = props.isOpen;
     if (t && isOpen) {
       const root = t.absolute_project_path || t.project_path || '';
-      setCurrentPath(root);
+      setRootPath(root);
       setSelectedFile(null);
       setFileContent('');
-      setFileList([]);
+      setDirectoryContents({});
+      setExpandedPaths({ [root]: true });
       setFileError('');
       setSaveSuccess(false);
 
       if (root) {
-        fetchFiles(root);
+        fetchDirectory(root);
       }
     }
   });
@@ -153,75 +269,49 @@ export function FileExplorer(props: FileExplorerProps) {
     <div class="absolute inset-0 flex min-h-0 divide-x divide-gray-700/60 animate-fade-in">
       
       {/* File Browser Sidebar */}
-      <div class="w-56 shrink-0 flex flex-col h-full bg-gray-950/20 overflow-hidden">
+      <div class="w-64 shrink-0 flex flex-col h-full bg-gray-950/20 overflow-hidden">
         <div class="px-3 py-2 border-b border-gray-700/60 flex items-center justify-between bg-gray-900/10 shrink-0">
           <span class="text-[10px] uppercase font-bold tracking-wider text-gray-400">Project Files</span>
-          <span class="text-[10px] text-gray-500 truncate max-w-[100px] font-mono" title={relativePath(currentPath())}>
-            {relativePath(currentPath())}
+          <span class="text-[10px] text-gray-500 truncate max-w-[120px] font-mono" title={relativePath(rootPath())}>
+            {relativePath(rootPath())}
           </span>
         </div>
         
-        <div class="flex-1 overflow-y-auto p-2 space-y-0.5">
-          {/* Parent directory navigation */}
-          <Show when={currentPath() !== (props.task.absolute_project_path || props.task.project_path || '')}>
-            <button 
-              type="button"
-              onClick={() => {
-                const parts = currentPath().split('/');
-                parts.pop();
-                const parent = parts.join('/');
-                const root = props.task.absolute_project_path || props.task.project_path || '';
-                if (parent.startsWith(root)) {
-                  setCurrentPath(parent);
-                  fetchFiles(parent);
-                }
-              }}
-              class="w-full text-left px-2.5 py-1.5 text-xs text-indigo-300 hover:bg-gray-800 rounded flex items-center gap-1.5 font-medium transition-colors"
-            >
-              <span class="text-xs">📁</span>
-              <span>..</span>
-            </button>
-          </Show>
-
-          {/* Empty list */}
-          <Show when={fileList().length === 0}>
-            <div class="p-3 text-xs text-gray-500 italic">No files found</div>
-          </Show>
-
+        <div class="flex-1 overflow-y-auto p-2 space-y-0.5 column-scroll">
           {/* List of files/directories */}
-          <For each={fileList()}>
-            {(entry) => (
-              <Show 
-                when={entry.is_dir}
-                fallback={
-                  <button 
-                    type="button"
-                    onClick={() => selectFile(entry)}
-                    class={`w-full text-left px-2.5 py-1.5 text-xs rounded flex items-center gap-1.5 truncate transition-colors ${
-                      selectedFile()?.path === entry.path 
-                        ? 'bg-indigo-600/30 text-indigo-200 font-semibold' 
-                        : 'text-gray-300 hover:bg-gray-800'
-                    }`}
-                  >
-                    <span class="text-xs opacity-70">📄</span>
-                    <span class="truncate" title={entry.name}>{entry.name}</span>
-                  </button>
-                }
-              >
-                <button 
-                  type="button"
-                  onClick={() => {
-                    setCurrentPath(entry.path);
-                    fetchFiles(entry.path);
-                  }}
-                  class="w-full text-left px-2.5 py-1.5 text-xs text-gray-300 hover:bg-gray-800 rounded flex items-center gap-1.5 truncate transition-colors font-medium"
-                >
-                  <span class="text-xs opacity-70">📁</span>
-                  <span class="truncate" title={entry.name}>{entry.name}</span>
-                </button>
-              </Show>
-            )}
-          </For>
+          <Show 
+            when={directoryContents()[rootPath()]} 
+            fallback={
+              <div class="p-3 text-xs text-gray-500 italic flex items-center gap-2">
+                <svg class="animate-spin h-3.5 w-3.5 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Loading files...
+              </div>
+            }
+          >
+            <Show 
+              when={(directoryContents()[rootPath()] || []).length > 0}
+              fallback={
+                <div class="p-3 text-xs text-gray-500 italic">No files found</div>
+              }
+            >
+              <For each={directoryContents()[rootPath()]}>
+                {(child) => (
+                  <FileTreeItem
+                    entry={child}
+                    depth={0}
+                    expandedPaths={expandedPaths}
+                    directoryContents={directoryContents}
+                    selectedFile={selectedFile}
+                    onSelectFile={selectFile}
+                    onToggleExpand={toggleExpand}
+                  />
+                )}
+              </For>
+            </Show>
+          </Show>
         </div>
       </div>
 
