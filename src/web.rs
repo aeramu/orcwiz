@@ -59,7 +59,14 @@ pub async fn start_server(db: Arc<Db>, config: crate::config::Config) {
         .route("/tasks/:id/status", put(update_status))
         .route("/tasks/:id/run", post(run_task))
         .route("/files", get(list_files).put(write_file))
-        .route("/files/read", get(read_file));
+        .route("/files/read", get(read_file))
+        .route("/git/status", get(git_status))
+        .route("/git/diff", get(git_diff))
+        .route("/git/add", post(git_add))
+        .route("/git/unstage", post(git_unstage))
+        .route("/git/restore", post(git_restore))
+        .route("/git/commit", post(git_commit))
+        .route("/git/init", post(git_init));
 
     let app = Router::new()
         .nest("/api", api_routes)
@@ -460,6 +467,358 @@ async fn write_file(
     
     match std::fs::write(path, &payload.content) {
         Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+struct GitPathQuery {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct GitDiffQuery {
+    path: String,
+    file: String,
+    staged: bool,
+    untracked: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct GitActionRequest {
+    path: String,
+    file: String,
+}
+
+#[derive(Deserialize)]
+struct GitCommitRequest {
+    path: String,
+    message: String,
+}
+
+#[derive(serde::Serialize)]
+struct GitFileStatus {
+    name: String,
+    path: String,
+    status: String,
+    staged: bool,
+}
+
+async fn git_status(
+    axum::extract::Query(query): axum::extract::Query<GitPathQuery>,
+) -> Result<Json<Vec<GitFileStatus>>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let resolved_path = resolve_absolute_path(&query.path);
+    let path = std::path::Path::new(&resolved_path);
+    if !path.exists() {
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Path does not exist" })),
+        ));
+    }
+
+    let output = tokio::process::Command::new("git")
+        .arg("status")
+        .arg("--porcelain")
+        .current_dir(&resolved_path)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) => {
+            if !out.status.success() {
+                let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
+                if err_msg.contains("not a git repository") {
+                    return Err((
+                        axum::http::StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({ "error": "not_a_repo" })),
+                    ));
+                }
+                return Err((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": err_msg })),
+                ));
+            }
+
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let mut file_statuses = Vec::new();
+
+            for line in stdout.lines() {
+                if line.len() < 4 {
+                    continue;
+                }
+                let x = line.chars().nth(0).unwrap_or(' ');
+                let y = line.chars().nth(1).unwrap_or(' ');
+                let raw_path = &line[3..];
+                
+                let clean_path = if raw_path.contains(" -> ") {
+                    raw_path.split(" -> ").last().unwrap_or(raw_path)
+                } else {
+                    raw_path
+                };
+                let clean_path = clean_path.trim_matches('"');
+                let name = std::path::Path::new(clean_path)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| clean_path.to_string());
+
+                // Untracked: X='?' Y='?'
+                if x == '?' && y == '?' {
+                    file_statuses.push(GitFileStatus {
+                        name: name.clone(),
+                        path: clean_path.to_string(),
+                        status: "untracked".to_string(),
+                        staged: false,
+                    });
+                    continue;
+                }
+
+                // Staged entry: X is not ' '
+                if x != ' ' {
+                    let status_str = match x {
+                        'M' => "modified",
+                        'A' => "added",
+                        'D' => "deleted",
+                        'R' => "renamed",
+                        'C' => "copied",
+                        'U' => "unmerged",
+                        _ => "modified",
+                    };
+                    file_statuses.push(GitFileStatus {
+                        name: name.clone(),
+                        path: clean_path.to_string(),
+                        status: status_str.to_string(),
+                        staged: true,
+                    });
+                }
+
+                // Unstaged entry: Y is not ' '
+                if y != ' ' {
+                    let status_str = match y {
+                        'M' => "modified",
+                        'D' => "deleted",
+                        'U' => "unmerged",
+                        _ => "modified",
+                    };
+                    file_statuses.push(GitFileStatus {
+                        name: name.clone(),
+                        path: clean_path.to_string(),
+                        status: status_str.to_string(),
+                        staged: false,
+                    });
+                }
+            }
+
+            Ok(Json(file_statuses))
+        }
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+async fn git_diff(
+    axum::extract::Query(query): axum::extract::Query<GitDiffQuery>,
+) -> Result<String, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let resolved_path = resolve_absolute_path(&query.path);
+    
+    // For untracked files, generate diff against empty
+    if query.untracked.unwrap_or(false) {
+        let file_path = std::path::Path::new(&resolved_path).join(&query.file);
+        match std::fs::read_to_string(&file_path) {
+            Ok(content) => {
+                let mut diff = format!("diff --git a/{} b/{}\n", query.file, query.file);
+                diff.push_str("new file mode 100644\n");
+                diff.push_str("--- /dev/null\n");
+                diff.push_str(&format!("+++ b/{}\n", query.file));
+                let line_count = content.lines().count();
+                diff.push_str(&format!("@@ -0,0 +1,{} @@\n", line_count));
+                for line in content.lines() {
+                    diff.push_str(&format!("+{}\n", line));
+                }
+                return Ok(diff);
+            }
+            Err(e) => {
+                return Err((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("Failed to read untracked file: {}", e) })),
+                ));
+            }
+        }
+    }
+
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.current_dir(&resolved_path);
+    cmd.arg("diff");
+    if query.staged {
+        cmd.arg("--cached");
+    }
+    cmd.arg("--");
+    cmd.arg(&query.file);
+
+    match cmd.output().await {
+        Ok(out) => {
+            if !out.status.success() {
+                let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
+                return Err((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": err_msg })),
+                ));
+            }
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            Ok(stdout)
+        }
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+async fn git_add(
+    Json(payload): Json<GitActionRequest>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let resolved_path = resolve_absolute_path(&payload.path);
+    let output = tokio::process::Command::new("git")
+        .arg("add")
+        .arg(&payload.file)
+        .current_dir(&resolved_path)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) => {
+            if !out.status.success() {
+                let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
+                return Err((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": err_msg })),
+                ));
+            }
+            Ok(Json(serde_json::json!({ "success": true })))
+        }
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+async fn git_unstage(
+    Json(payload): Json<GitActionRequest>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let resolved_path = resolve_absolute_path(&payload.path);
+    let output = tokio::process::Command::new("git")
+        .arg("restore")
+        .arg("--staged")
+        .arg("--")
+        .arg(&payload.file)
+        .current_dir(&resolved_path)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) => {
+            if !out.status.success() {
+                let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
+                return Err((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": err_msg })),
+                ));
+            }
+            Ok(Json(serde_json::json!({ "success": true })))
+        }
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+async fn git_restore(
+    Json(payload): Json<GitActionRequest>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let resolved_path = resolve_absolute_path(&payload.path);
+    let output = tokio::process::Command::new("git")
+        .arg("restore")
+        .arg("--")
+        .arg(&payload.file)
+        .current_dir(&resolved_path)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) => {
+            if !out.status.success() {
+                let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
+                return Err((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": err_msg })),
+                ));
+            }
+            Ok(Json(serde_json::json!({ "success": true })))
+        }
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+async fn git_commit(
+    Json(payload): Json<GitCommitRequest>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let resolved_path = resolve_absolute_path(&payload.path);
+    let output = tokio::process::Command::new("git")
+        .arg("commit")
+        .arg("-m")
+        .arg(&payload.message)
+        .current_dir(&resolved_path)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) => {
+            if !out.status.success() {
+                let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
+                return Err((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": err_msg })),
+                ));
+            }
+            Ok(Json(serde_json::json!({ "success": true })))
+        }
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+async fn git_init(
+    Json(payload): Json<GitPathQuery>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let resolved_path = resolve_absolute_path(&payload.path);
+    let output = tokio::process::Command::new("git")
+        .arg("init")
+        .current_dir(&resolved_path)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) => {
+            if !out.status.success() {
+                let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
+                return Err((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": err_msg })),
+                ));
+            }
+            Ok(Json(serde_json::json!({ "success": true })))
+        }
         Err(e) => Err((
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
