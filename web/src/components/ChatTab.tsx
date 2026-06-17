@@ -2,6 +2,7 @@ import { createSignal, createEffect, Show, For } from 'solid-js';
 import type { Task, OrcwizConfig } from '../types';
 import { MessageItem } from './MessageItem';
 import { QuestionWizard } from './QuestionWizard';
+import { createOpencodeClient } from '@opencode-ai/sdk/v2/client';
 
 type ChatTabProps = {
   task: Task;
@@ -37,19 +38,30 @@ export function ChatTab(props: ChatTabProps) {
     return headers;
   };
 
-  const fetchQuestions = async () => {
+  const client = () => {
     const serverUrl = props.config?.opencode_server_url;
+    if (!serverUrl) return null;
+    return createOpencodeClient({
+      baseUrl: serverUrl,
+      directory: props.task?.absolute_project_path || props.task?.project_path || undefined,
+      headers: props.config?.opencode_auth_header ? {
+        Authorization: props.config.opencode_auth_header
+      } : undefined
+    });
+  };
+
+  const fetchQuestions = async () => {
+    const c = client();
     const directory = props.task?.absolute_project_path || props.task?.project_path;
-    if (!serverUrl || !directory) return;
+    if (!c || !directory) return;
 
     try {
-      const res = await fetch(`${serverUrl}/question?directory=${encodeURIComponent(directory)}`, {
-        headers: getHeaders(),
+      const res = await c.question.list({
+        directory
       });
-      if (res.ok) {
-        const data = await res.json();
-        const list = data.data || data;
-        if (Array.isArray(list) && list.length > 0) {
+      if (res.data) {
+        const list = res.data;
+        if (list.length > 0) {
           const currentQue = activeQuestion();
           if (!currentQue || currentQue.id !== list[0].id) {
             setActiveQuestion(list[0]);
@@ -64,21 +76,16 @@ export function ChatTab(props: ChatTabProps) {
   };
 
   const fetchMessages = async () => {
-    const serverUrl = props.config?.opencode_server_url;
+    const c = client();
     const sessId = rawSessionId();
-    if (!serverUrl || !sessId) return;
+    if (!c || !sessId) return;
 
     try {
-      const res = await fetch(`${serverUrl}/session/${sessId}/message`, {
-        headers: getHeaders(),
+      const res = await c.session.messages({
+        sessionID: sessId,
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && Array.isArray(data)) {
-          setMessages(data);
-        } else if (data && Array.isArray(data.data)) {
-          setMessages(data.data);
-        }
+      if (res.data) {
+        setMessages(res.data);
       }
     } catch (e) {
       console.error("Error fetching messages", e);
@@ -88,32 +95,23 @@ export function ChatTab(props: ChatTabProps) {
   const handleSendMessage = async (e: Event) => {
     e.preventDefault();
     const text = inputText().trim();
-    const serverUrl = props.config?.opencode_server_url;
+    const c = client();
     const sessId = rawSessionId();
-    if (!text || !serverUrl || !sessId || isSending()) return;
+    if (!text || !c || !sessId || isSending()) return;
 
     setIsSending(true);
     setErrorMsg('');
     try {
-      const res = await fetch(`${serverUrl}/session/${sessId}/message`, {
-        method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify({
-          parts: [
-            {
-              type: 'text',
-              text: text
-            }
-          ]
-        })
-      });
-      if (res.ok) {
-        setInputText('');
-        fetchMessages();
-      } else {
-        const err = await res.json().catch(() => ({}));
-        setErrorMsg(err.message || `Failed to send prompt (HTTP ${res.status})`);
-      }
+      await c.session.prompt({
+        sessionID: sessId,
+        parts: [
+          {
+            type: 'text',
+            text: text
+          }
+        ]
+      }, { throwOnError: true });
+      setInputText('');
     } catch (err: any) {
       console.error("Error sending prompt", err);
       setErrorMsg(err.message || "Failed to communicate with OpenCode server.");
@@ -147,7 +145,7 @@ export function ChatTab(props: ChatTabProps) {
 
       const applyEventToMessages = (event: any) => {
         const type = event.type;
-        const properties = event.properties;
+        const properties = event.properties || event.data;
 
         setMessages(prev => {
           if (type === "message.updated") {
@@ -175,20 +173,29 @@ export function ChatTab(props: ChatTabProps) {
             if (!part || !part.messageID) return prev;
 
             const idx = prev.findIndex(m => m.info?.id === part.messageID);
-            if (idx === -1) return prev;
+            if (idx !== -1) {
+              const msg = prev[idx];
+              const nextParts = [...(msg.parts || [])];
+              const pIdx = nextParts.findIndex(p => p.id === part.id);
+              if (pIdx !== -1) {
+                nextParts[pIdx] = { ...nextParts[pIdx], ...part };
+              } else {
+                nextParts.push(part);
+              }
 
-            const msg = prev[idx];
-            const nextParts = [...(msg.parts || [])];
-            const pIdx = nextParts.findIndex(p => p.id === part.id);
-            if (pIdx !== -1) {
-              nextParts[pIdx] = { ...nextParts[pIdx], ...part };
+              const next = [...prev];
+              next[idx] = { ...msg, parts: nextParts };
+              return next;
             } else {
-              nextParts.push(part);
+              return [...prev, {
+                info: {
+                  id: part.messageID,
+                  role: "assistant",
+                  sessionID: part.sessionID,
+                },
+                parts: [part]
+              }];
             }
-
-            const next = [...prev];
-            next[idx] = { ...msg, parts: nextParts };
-            return next;
           }
 
           if (type === "message.part.removed") {
@@ -215,20 +222,39 @@ export function ChatTab(props: ChatTabProps) {
             if (!messageID || !partID || !field || delta === undefined) return prev;
 
             const idx = prev.findIndex(m => m.info?.id === messageID);
-            if (idx === -1) return prev;
+            if (idx !== -1) {
+              const msg = prev[idx];
+              const nextParts = [...(msg.parts || [])];
+              const pIdx = nextParts.findIndex(p => p.id === partID);
+              if (pIdx !== -1) {
+                const part = nextParts[pIdx];
+                const existingVal = part[field] || "";
+                nextParts[pIdx] = { ...part, [field]: existingVal + delta };
+              } else {
+                nextParts.push({
+                  id: partID,
+                  messageID: messageID,
+                  [field]: delta
+                } as any);
+              }
 
-            const msg = prev[idx];
-            const nextParts = [...(msg.parts || [])];
-            const pIdx = nextParts.findIndex(p => p.id === partID);
-            if (pIdx === -1) return prev;
-
-            const part = nextParts[pIdx];
-            const existingVal = part[field] || "";
-            nextParts[pIdx] = { ...part, [field]: existingVal + delta };
-
-            const next = [...prev];
-            next[idx] = { ...msg, parts: nextParts };
-            return next;
+              const next = [...prev];
+              next[idx] = { ...msg, parts: nextParts };
+              return next;
+            } else {
+              return [...prev, {
+                info: {
+                  id: messageID,
+                  role: "assistant",
+                  sessionID: sessId,
+                },
+                parts: [{
+                  id: partID,
+                  messageID: messageID,
+                  [field]: delta
+                } as any]
+              }];
+            }
           }
 
           return prev;
@@ -240,10 +266,22 @@ export function ChatTab(props: ChatTabProps) {
 
       const onEvent = (event: any) => {
         const type = event?.type;
+        const properties = event?.properties || event?.data;
         if (!type) return;
 
-        if (type.startsWith("question.")) {
-          void fetchQuestions();
+        if (type === "question.asked") {
+          if (properties && properties.sessionID === sessId) {
+            setActiveQuestion(properties);
+          }
+        }
+
+        if (type === "question.replied" || type === "question.rejected") {
+          if (properties && properties.sessionID === sessId) {
+            const currentQue = activeQuestion();
+            if (currentQue && currentQue.id === properties.requestID) {
+              setActiveQuestion(null);
+            }
+          }
         }
 
         if (type.startsWith("message.")) {
@@ -251,61 +289,29 @@ export function ChatTab(props: ChatTabProps) {
         }
       };
 
-      const connectSSE = async () => {
-        const url = `${serverUrl}/api/event?location[directory]=${encodeURIComponent(directory)}`;
-
-        while (!controller.signal.aborted) {
-          try {
-            const response = await fetch(url, {
-              headers: getHeaders(),
-              signal: controller.signal
-            });
-
-            if (!response.ok) {
-              throw new Error(`SSE failed with status: ${response.status}`);
-            }
-            if (!response.body) return;
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = "";
-
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-
-              buffer += decoder.decode(value, { stream: true });
-              buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-
-              const chunks = buffer.split("\n\n");
-              buffer = chunks.pop() ?? "";
-
-              for (const chunk of chunks) {
-                const line = chunk.trim();
-                if (!line) continue;
-
-                if (line.startsWith("data:")) {
-                  try {
-                    const dataStr = line.substring(5).trim();
-                    const event = JSON.parse(dataStr);
-                    if (event) {
-                      onEvent(event);
-                    }
-                  } catch (e) {
-                    // Ignore JSON parsing errors for comments or malformed lines
-                  }
-                }
-              }
-            }
-          } catch (error) {
-            if (controller.signal.aborted) break;
-            console.error("OpenCode SSE stream error, retrying in 3s...", error);
-            await new Promise((resolve) => setTimeout(resolve, 3000));
+      const c = client();
+      if (c) {
+        c.v2.event.subscribe({
+          location: {
+            directory
           }
-        }
-      };
-
-      void connectSSE();
+        }, {
+          signal: controller.signal,
+          onSseError: (err) => {
+            if (!controller.signal.aborted) {
+              console.error("OpenCode SSE stream error:", err);
+            }
+          }
+        }).then(async (result) => {
+          for await (const event of result.stream) {
+            onEvent(event);
+          }
+        }).catch(err => {
+          if (!controller.signal.aborted) {
+            console.error("OpenCode SSE subscription failed:", err);
+          }
+        });
+      }
 
       // Clean up connection on close or task switch
       return () => {
@@ -360,6 +366,7 @@ export function ChatTab(props: ChatTabProps) {
           setErrorMsg={setErrorMsg}
           fetchMessages={fetchMessages}
           getHeaders={getHeaders}
+          client={client}
         />
       </Show>
 

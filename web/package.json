@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@opencode-ai/sdk": "^1.17.7",
     "solid-js": "^1.9.12"
   },
   "devDependencies": {

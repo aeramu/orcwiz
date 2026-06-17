@@ -1,5 +1,6 @@
 import { createSignal, createEffect, Show, For } from 'solid-js';
 import type { Task, OrcwizConfig } from '../types';
+import type { OpencodeClient } from '@opencode-ai/sdk/v2/client';
 
 type QuestionWizardProps = {
   task: Task;
@@ -9,6 +10,7 @@ type QuestionWizardProps = {
   setErrorMsg: (msg: string) => void;
   fetchMessages: () => Promise<void>;
   getHeaders: () => Record<string, string>;
+  client: () => OpencodeClient | null;
 };
 
 export function QuestionWizard(props: QuestionWizardProps) {
@@ -101,9 +103,9 @@ export function QuestionWizard(props: QuestionWizardProps) {
   };
 
   const handleSubmitAnswers = async () => {
-    const serverUrl = props.config?.opencode_server_url;
+    const c = props.client();
     const directory = props.task.absolute_project_path || props.task.project_path;
-    if (!serverUrl || !directory) return;
+    if (!c || !directory) return;
 
     const answers = req().questions.map((_: any, i: number) => {
       const opts = selectedAnswers()[i] || [];
@@ -118,40 +120,28 @@ export function QuestionWizard(props: QuestionWizardProps) {
     });
 
     try {
-      const res = await fetch(`${serverUrl}/question/${req().id}/reply?directory=${encodeURIComponent(directory)}`, {
-        method: 'POST',
-        headers: props.getHeaders(),
-        body: JSON.stringify({ answers }),
-      });
-      if (res.ok) {
-        props.setActiveQuestion(null);
-        props.fetchMessages();
-      } else {
-        const err = await res.json().catch(() => ({}));
-        props.setErrorMsg(err.message || `Failed to submit answer (HTTP ${res.status})`);
-      }
+      await c.question.reply({
+        requestID: req().id,
+        directory,
+        answers
+      }, { throwOnError: true });
+      props.setActiveQuestion(null);
     } catch (err: any) {
       props.setErrorMsg(err.message || "Failed to submit answers.");
     }
   };
 
   const handleDismiss = async () => {
-    const serverUrl = props.config?.opencode_server_url;
+    const c = props.client();
     const directory = props.task.absolute_project_path || props.task.project_path;
-    if (!serverUrl || !directory) return;
+    if (!c || !directory) return;
 
     try {
-      const res = await fetch(`${serverUrl}/question/${req().id}/reject?directory=${encodeURIComponent(directory)}`, {
-        method: 'POST',
-        headers: props.getHeaders(),
-      });
-      if (res.ok) {
-        props.setActiveQuestion(null);
-        props.fetchMessages();
-      } else {
-        const err = await res.json().catch(() => ({}));
-        props.setErrorMsg(err.message || `Failed to reject question (HTTP ${res.status})`);
-      }
+      await c.question.reject({
+        requestID: req().id,
+        directory
+      }, { throwOnError: true });
+      props.setActiveQuestion(null);
     } catch (err: any) {
       props.setErrorMsg(err.message || "Failed to reject question.");
     }
