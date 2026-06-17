@@ -1,325 +1,47 @@
-use clap::{Parser, Subcommand};
 use std::sync::Arc;
-use tracing::{info, error, warn};
+use tracing::info;
 
+mod agent;
+mod cli;
 mod config;
 mod db;
+mod orchestrator;
 mod runner;
 mod service;
 mod web;
-mod agent;
-
-#[derive(Parser)]
-#[command(name = "orcwiz")]
-#[command(about = "AI Agent Orchestration Tool", long_about = None)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Start the orchestrator and web server
-    Start,
-    /// Install as a background service
-    Install,
-    /// View the kanban board
-    Board,
-    /// Task management commands
-    Task {
-        #[command(subcommand)]
-        action: TaskCommands,
-    },
-}
-
-#[derive(Subcommand)]
-enum TaskCommands {
-    /// Add a new task
-    Add {
-        title: String,
-        project_path: String,
-        description: Option<String>,
-        #[arg(long)]
-        parent_id: Option<i64>,
-    },
-    /// View task detail
-    Info {
-        id: i64,
-    },
-    /// Run a task
-    Run {
-        id: i64,
-    },
-    /// Update a task's status
-    SetStatus {
-        id: i64,
-        status: String,
-    },
-    /// Update a task's details (only if in backlog)
-    Update {
-        id: i64,
-        #[arg(short, long)]
-        title: Option<String>,
-        #[arg(short, long)]
-        project_path: Option<String>,
-        #[arg(short, long)]
-        description: Option<String>,
-        #[arg(long)]
-        parent_id: Option<i64>,
-    },
-}
-
-fn truncate(s: &str, max_width: usize) -> String {
-    if s.len() > max_width {
-        format!("{}...", &s[..max_width - 3])
-    } else {
-        s.to_string()
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt::init();
 
-    let cli = Cli::parse();
-
-    match &cli.command {
-        Commands::Install => {
-            service::install_service()?;
-        }
-        Commands::Board => {
-            let config = config::Config::load();
-            let url = format!("http://localhost:{}/api/tasks", config.port);
-            let client = reqwest::Client::new();
-            let res = client.get(&url).send().await?;
-            if !res.status().is_success() {
-                println!("Error: Failed to fetch tasks from server.");
-                return Ok(());
-            }
-            let tasks: Vec<db::Task> = res.json().await?;
-            
-            println!("{:-<100}", "");
-            println!("{:<5} | {:<30} | {:<15} | {:<15} | {}", "ID", "Title", "Status", "Session ID", "Project Path");
-            println!("{:-<100}", "");
-            for t in tasks {
-                println!(
-                    "{:<5} | {:<30} | {:<15} | {:<15} | {}",
-                    t.id,
-                    truncate(&t.title, 30),
-                    t.status,
-                    truncate(&t.session_id.unwrap_or_else(|| "N/A".to_string()), 15),
-                    t.project_path
-                );
-            }
-            println!("{:-<100}", "");
-        }
-        Commands::Task { action } => match action {
-            TaskCommands::Add { title, project_path, description, parent_id } => {
-                let config = config::Config::load();
-                let url = format!("http://localhost:{}/api/tasks", config.port);
-                let client = reqwest::Client::new();
-                
-                let payload = serde_json::json!({
-                    "title": title,
-                    "project_path": project_path,
-                    "description": description,
-                    "parent_id": parent_id
-                });
-
-                let res = client.post(&url).json(&payload).send().await?;
-                if res.status().is_success() {
-                    let json: serde_json::Value = res.json().await?;
-                    println!("Task {} added successfully.", json["id"]);
-                } else {
-                    println!("Error adding task.");
-                }
-            }
-            TaskCommands::Info { id } => {
-                let config = config::Config::load();
-                let url = format!("http://localhost:{}/api/tasks/{}", config.port, id);
-                let client = reqwest::Client::new();
-                let res = client.get(&url).send().await?;
-                if res.status().is_success() {
-                    let task: db::Task = res.json().await?;
-                    println!("Task ID:       {}", task.id);
-                    if let Some(pid) = task.parent_id {
-                        println!("Parent ID:     {}", pid);
-                    }
-                    println!("Title:         {}", task.title);
-                    println!("Status:        {}", task.status);
-                    println!("Project Path:  {}", task.project_path);
-                    println!("Session ID:    {}", task.session_id.unwrap_or_else(|| "N/A".to_string()));
-                    println!("Created At:    {}", task.created_at);
-                    println!("Description:\n{}", task.description.unwrap_or_else(|| "N/A".to_string()));
-                } else {
-                    println!("Error: Task not found or server error.");
-                }
-            }
-            TaskCommands::Run { id } => {
-                let config = config::Config::load();
-                let url = format!("http://localhost:{}/api/tasks/{}/run", config.port, id);
-                let client = reqwest::Client::new();
-                
-                let res = client.post(&url).send().await?;
-                if res.status().is_success() {
-                    println!("Task {} run triggered successfully.", id);
-                } else {
-                    println!("Error triggering task run.");
-                }
-            }
-            TaskCommands::SetStatus { id, status } => {
-                let config = config::Config::load();
-                let url = format!("http://localhost:{}/api/tasks/{}/status", config.port, id);
-                let client = reqwest::Client::new();
-                
-                let payload = serde_json::json!({
-                    "status": status
-                });
-
-                let res = client.put(&url).json(&payload).send().await?;
-                if res.status().is_success() {
-                    println!("Task {} status updated to '{}' successfully.", id, status);
-                } else {
-                    println!("Error updating task status.");
-                }
-            }
-            TaskCommands::Update { id, title, project_path, description, parent_id } => {
-                let config = config::Config::load();
-                let url = format!("http://localhost:{}/api/tasks/{}", config.port, id);
-                let client = reqwest::Client::new();
-                
-                let payload = serde_json::json!({
-                    "title": title,
-                    "project_path": project_path,
-                    "description": description,
-                    "parent_id": parent_id
-                });
-
-                let res = client.put(&url).json(&payload).send().await?;
-                if res.status().is_success() {
-                    println!("Task {} updated successfully.", id);
-                } else if res.status() == reqwest::StatusCode::BAD_REQUEST {
-                    let text = res.text().await.unwrap_or_default();
-                    println!("Failed to update task: {}", text);
-                } else {
-                    println!("Error updating task.");
-                }
-            }
-        },
-        Commands::Start => {
-            let config = config::Config::load();
-            let db = Arc::new(db::Db::new()?);
-            let runner = Arc::new(runner::Runner::new(config.opencode_server_url.clone()));
-
-            let agent: Arc<crate::agent::AgentEngine> = if config.agent_type == "opencode" {
-                Arc::new(crate::agent::AgentEngine::Opencode(crate::agent::OpencodeAgent::new(config.opencode_server_url.clone())))
-            } else {
-                let cmd_template = config.generic_cli_command.clone()
-                    .unwrap_or_else(|| "claude run {prompt}".to_string());
-                Arc::new(crate::agent::AgentEngine::Generic(crate::agent::GenericCliAgent::new(cmd_template)))
-            };
-
-            info!("Starting Orcwiz Orchestrator on port {}", config.port);
-
-            let db_clone = Arc::clone(&db);
-            let runner_clone = Arc::clone(&runner);
-            let agent_clone = Arc::clone(&agent);
-            tokio::spawn(async move {
-                loop {
-                    if let Ok(tasks) = db_clone.list_tasks() {
-                        for task in tasks {
-                            if task.status == "todo" {
-                                info!("Found todo task: {}", task.title);
-                                let _ = db_clone.update_task_status(task.id, "in_progress");
-
-                                let desc = task.description.clone().unwrap_or_default();
-                                let title = task.title.clone();
-                                let task_id = task.id;
-                                let project_path = match runner_clone.prepare_project(&task.project_path).await {
-                                    Ok(p) => p,
-                                    Err(e) => {
-                                        error!("Failed to prepare project for task {}: {}", task.id, e);
-                                        let _ = db_clone.update_task_status(task.id, "failed");
-                                        continue;
-                                    }
-                                };
-
-                                let db_for_runner = Arc::clone(&db_clone);
-                                let db_for_callback = Arc::clone(&db_clone);
-                                let agent_for_spawn = Arc::clone(&agent_clone);
-
-                                let on_complete = Box::new(move |status: crate::agent::AgentStatus| {
-                                    match status {
-                                        crate::agent::AgentStatus::Success => {
-                                            info!("Task {} finished successfully", task_id);
-                                            let _ = db_for_callback.update_task_status(task_id, "review");
-                                        }
-                                        crate::agent::AgentStatus::Failed(err) => {
-                                            warn!("Task {} failed: {}", task_id, err);
-                                            let _ = db_for_callback.update_task_status(task_id, "failed");
-                                        }
-                                        crate::agent::AgentStatus::Running => {}
-                                    }
-                                });
-
-                                tokio::spawn(async move {
-                                    match agent_for_spawn.start_task(task_id, &project_path, &title, &desc, on_complete).await {
-                                        Ok(sess_id) => {
-                                            info!("Successfully started task {} with session: {}", task_id, sess_id);
-                                            let _ = db_for_runner.update_task_session(task_id, &sess_id);
-                                        }
-                                        Err(e) => {
-                                            error!("Failed to start task {}: {}", task_id, e);
-                                            let _ = db_for_runner.update_task_status(task_id, "failed");
-                                        }
-                                    }
-                                });
-                            }
-
-                            if task.status == "in_progress" {
-                                if let Some(ref sess_id) = task.session_id {
-                                    let task_id = task.id;
-                                    let project_path = match runner_clone.prepare_project(&task.project_path).await {
-                                        Ok(p) => p,
-                                        Err(e) => {
-                                            error!("Failed to prepare project path to check status for task {}: {}", task.id, e);
-                                            continue;
-                                        }
-                                    };
-
-                                    let agent = Arc::clone(&agent_clone);
-                                    let db = Arc::clone(&db_clone);
-                                    let sess_id = sess_id.clone();
-                                    tokio::spawn(async move {
-                                        match agent.check_status(&sess_id, &project_path).await {
-                                            Ok(crate::agent::AgentStatus::Success) => {
-                                                info!("Task {} finished successfully", task_id);
-                                                let _ = db.update_task_status(task_id, "review");
-                                            }
-                                            Ok(crate::agent::AgentStatus::Failed(err)) => {
-                                                warn!("Task {} failed: {}", task_id, err);
-                                                let _ = db.update_task_status(task_id, "failed");
-                                            }
-                                            Ok(crate::agent::AgentStatus::Running) => {
-                                                // Still running
-                                            }
-                                            Err(e) => {
-                                                warn!("Error checking status for task {}: {}", task_id, e);
-                                            }
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                }
-            });
-
-            // Start the web server on the main thread
-            web::start_server(db, config.port).await;
-        }
+    // Run CLI. If it returns Ok(true), start command was called and we should run the server/orchestrator.
+    // Otherwise, we handled a client subcommand and can exit now.
+    if !cli::run_cli().await? {
+        return Ok(());
     }
+
+    let config = config::Config::load();
+    let db = Arc::new(db::Db::new()?);
+    let runner = Arc::new(runner::Runner::new(config.opencode_server_url.clone()));
+
+    let agent: Arc<dyn agent::Agent> = if config.agent_type == "opencode" {
+        Arc::new(agent::OpencodeAgent::new(config.opencode_server_url.clone()))
+    } else {
+        let cmd_template = config
+            .generic_cli_command
+            .clone()
+            .unwrap_or_else(|| "claude run {prompt}".to_string());
+        Arc::new(agent::GenericCliAgent::new(cmd_template))
+    };
+
+    info!("Starting Orcwiz Orchestrator on port {}", config.port);
+
+    // Start background orchestrator loop
+    let orchestrator = orchestrator::Orchestrator::new(Arc::clone(&db), runner, agent);
+    orchestrator.start();
+
+    // Start the web server on the main thread
+    web::start_server(db, config.port).await;
 
     Ok(())
 }
