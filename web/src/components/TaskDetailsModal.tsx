@@ -380,12 +380,76 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
     setIsEditing(false);
   });
 
-  // Poll for messages when modal is open and has an opencode session
+  // Listen for real-time events when modal is open and has an opencode session
   createEffect(() => {
-    if (props.isOpen && rawSessionId()) {
+    const serverUrl = props.config?.opencode_server_url;
+    const sessId = rawSessionId();
+    const directory = props.task?.absolute_project_path || props.task?.project_path;
+
+    if (props.isOpen && serverUrl && sessId && directory) {
+      // 1. Initial fetch
       fetchMessages();
-      const interval = setInterval(fetchMessages, 2000);
-      return () => clearInterval(interval);
+
+      // 2. Set up SSE connection
+      const controller = new AbortController();
+      let fetchTimer: number | undefined;
+
+      const onEvent = () => {
+        if (fetchTimer) return;
+        fetchTimer = window.setTimeout(() => {
+          fetchTimer = undefined;
+          fetchMessages();
+        }, 100);
+      };
+
+      const connectSSE = async () => {
+        const url = `${serverUrl}/api/event?location[directory]=${encodeURIComponent(directory)}`;
+
+        while (!controller.signal.aborted) {
+          try {
+            const response = await fetch(url, {
+              headers: getHeaders(),
+              signal: controller.signal
+            });
+
+            if (!response.ok) {
+              throw new Error(`SSE failed with status: ${response.status}`);
+            }
+            if (!response.body) return;
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+              const chunks = buffer.split("\n\n");
+              buffer = chunks.pop() ?? "";
+
+              if (chunks.length > 0) {
+                onEvent();
+              }
+            }
+          } catch (error) {
+            if (controller.signal.aborted) break;
+            console.error("OpenCode SSE stream error, retrying in 3s...", error);
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+          }
+        }
+      };
+
+      void connectSSE();
+
+      // Clean up connection and timer on close or task switch
+      return () => {
+        controller.abort();
+        if (fetchTimer) window.clearTimeout(fetchTimer);
+      };
     }
   });
 

@@ -104,12 +104,20 @@ struct TaskResponse {
 }
 
 fn resolve_absolute_path(project_path: &str) -> String {
-    let path = std::path::PathBuf::from(project_path);
-    let resolved = if path.is_absolute() {
-        path
+    let resolved = if project_path.starts_with("~/") {
+        if let Some(user_dirs) = directories::UserDirs::new() {
+            user_dirs.home_dir().join(project_path.trim_start_matches("~/"))
+        } else {
+            std::path::PathBuf::from(project_path)
+        }
     } else {
-        let config = crate::config::Config::load();
-        config.projects_dir.join(path)
+        let path = std::path::PathBuf::from(project_path);
+        if path.is_absolute() {
+            path
+        } else {
+            let config = crate::config::Config::load();
+            config.projects_dir.join(path)
+        }
     };
     resolved.to_string_lossy().to_string()
 }
