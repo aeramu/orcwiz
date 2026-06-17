@@ -1,6 +1,5 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
 
 pub fn install_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let exe_path = env::current_exe()?;

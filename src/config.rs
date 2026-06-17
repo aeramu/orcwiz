@@ -9,10 +9,18 @@ pub struct Config {
     pub port: u16,
     #[serde(default)]
     pub opencode_server_url: Option<String>,
+    #[serde(default = "default_agent_type")]
+    pub agent_type: String,
+    #[serde(default)]
+    pub generic_cli_command: Option<String>,
 }
 
 fn default_port() -> u16 {
     3000
+}
+
+fn default_agent_type() -> String {
+    "opencode".to_string()
 }
 
 impl Config {
@@ -25,6 +33,8 @@ impl Config {
                     .unwrap_or_else(|| PathBuf::from("./dev")),
                 port: 3000,
                 opencode_server_url: Some("http://localhost:4096".to_string()),
+                agent_type: "opencode".to_string(),
+                generic_cli_command: Some("claude run {prompt}".to_string()),
             };
             if let Some(parent) = config_path.parent() {
                 fs::create_dir_all(parent).unwrap();
