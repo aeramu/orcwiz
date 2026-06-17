@@ -14,6 +14,20 @@ fn is_pid_running(pid: u32) -> bool {
     }
 }
 
+fn shell_escape(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len() + 10);
+    escaped.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            escaped.push_str("'\\''");
+        } else {
+            escaped.push(c);
+        }
+    }
+    escaped.push('\'');
+    escaped
+}
+
 pub struct GenericCliAgent {
     command_template: String,
 }
@@ -35,7 +49,8 @@ impl Agent for GenericCliAgent {
         on_complete: Box<dyn FnOnce(AgentStatus) + Send + 'static>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let prompt = format!("Task: {}\nDescription: {}", title, description);
-        let run_cmd = self.command_template.replace("{prompt}", &prompt);
+        let escaped_prompt = shell_escape(&prompt);
+        let run_cmd = self.command_template.replace("{prompt}", &escaped_prompt);
 
         info!("Spawning generic CLI command in background: {}", run_cmd);
 
