@@ -57,7 +57,9 @@ pub async fn start_server(db: Arc<Db>, config: crate::config::Config) {
         .route("/tasks", get(list_tasks).post(add_task))
         .route("/tasks/:id", get(get_task).put(update_details).delete(delete_task))
         .route("/tasks/:id/status", put(update_status))
-        .route("/tasks/:id/run", post(run_task));
+        .route("/tasks/:id/run", post(run_task))
+        .route("/files", get(list_files).put(write_file))
+        .route("/files/read", get(read_file));
 
     let app = Router::new()
         .nest("/api", api_routes)
@@ -327,6 +329,136 @@ async fn run_task(
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
     // To run a task, we move it to "todo" status, and the background loop will pick it up
     match state.db.update_task_status(id, "todo") {
+        Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+struct FilesQuery {
+    path: String,
+}
+
+#[derive(serde::Serialize)]
+struct FileEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+    size: u64,
+}
+
+async fn list_files(
+    axum::extract::Query(query): axum::extract::Query<FilesQuery>,
+) -> Result<Json<Vec<FileEntry>>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let path = std::path::Path::new(&query.path);
+    if !path.exists() {
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Path does not exist" })),
+        ));
+    }
+    
+    let mut entries = Vec::new();
+    match std::fs::read_dir(path) {
+        Ok(read_dir) => {
+            for entry in read_dir {
+                if let Ok(entry) = entry {
+                    let metadata = entry.metadata().ok();
+                    let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                    let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    
+                    // Skip hidden files/dirs starting with . (except .gitignore)
+                    if name.starts_with('.') && name != ".gitignore" {
+                        continue;
+                    }
+                    
+                    entries.push(FileEntry {
+                        name,
+                        path: entry.path().to_string_lossy().to_string(),
+                        is_dir,
+                        size,
+                    });
+                }
+            }
+            // Sort directories first, then files alphabetically
+            entries.sort_by(|a, b| {
+                if a.is_dir != b.is_dir {
+                    b.is_dir.cmp(&a.is_dir)
+                } else {
+                    a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                }
+            });
+            Ok(Json(entries))
+        }
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+async fn read_file(
+    axum::extract::Query(query): axum::extract::Query<FilesQuery>,
+) -> Result<axum::response::Response, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let path = std::path::Path::new(&query.path);
+    if !path.exists() {
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "File not found" })),
+        ));
+    }
+    if path.is_dir() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Path is a directory" })),
+        ));
+    }
+    
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            Ok(content.into_response())
+        }
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+struct WriteFileRequest {
+    path: String,
+    content: String,
+}
+
+async fn write_file(
+    Json(payload): Json<WriteFileRequest>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let path = std::path::Path::new(&payload.path);
+    if path.is_dir() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Path is a directory" })),
+        ));
+    }
+    
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return Err((
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("Failed to create parent directories: {}", e) })),
+                ));
+            }
+        }
+    }
+    
+    match std::fs::write(path, &payload.content) {
         Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
         Err(e) => Err((
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,

@@ -14,6 +14,14 @@ type TaskDetailsModalProps = {
   config: OrcwizConfig | null;
 };
 
+type FileEntry = {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;
+};
+
+
 function renderMarkdown(text: string) {
   if (!text) return '';
   let html = text
@@ -278,6 +286,54 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
   const [editDesc, setEditDesc] = createSignal('');
   const [editParentId, setEditParentId] = createSignal('');
   const [showEditPathSuggestions, setShowEditPathSuggestions] = createSignal(false);
+  const [editDirRecommendations, setEditDirRecommendations] = createSignal<string[]>([]);
+  let editDebounceTimer: number | undefined;
+
+  createEffect(() => {
+    const inputPath = editPath();
+    if (editDebounceTimer) {
+      clearTimeout(editDebounceTimer);
+    }
+    
+    if (!inputPath) {
+      setEditDirRecommendations([]);
+      return;
+    }
+
+    editDebounceTimer = window.setTimeout(() => {
+      const lastSlashIndex = inputPath.lastIndexOf('/');
+      let parent = '';
+      let prefix = '';
+      
+      if (lastSlashIndex !== -1) {
+        parent = inputPath.substring(0, lastSlashIndex);
+        prefix = inputPath.substring(lastSlashIndex + 1);
+        if (parent === '') {
+          parent = '/';
+        }
+      } else {
+        parent = '.';
+        prefix = inputPath;
+      }
+
+      fetch(`/api/files?path=${encodeURIComponent(parent)}`)
+        .then(async (res) => {
+          if (res.ok) {
+            const entries = await res.json();
+            const matches = entries
+              .filter((e: any) => e.is_dir && e.name.toLowerCase().includes(prefix.toLowerCase()))
+              .map((e: any) => e.path);
+            setEditDirRecommendations(matches);
+          } else {
+            setEditDirRecommendations([]);
+          }
+        })
+        .catch(() => {
+          setEditDirRecommendations([]);
+        });
+    }, 250);
+  });
+
 
   // Chat signals
   const [messages, setMessages] = createSignal<any[]>([]);
@@ -285,6 +341,135 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
   const [isSending, setIsSending] = createSignal(false);
   const [errorMsg, setErrorMsg] = createSignal('');
   let messagesContainerRef: HTMLDivElement | undefined;
+
+  // File browser & Editor signals
+  const [activeTab, setActiveTab] = createSignal<'chat' | 'files'>('chat');
+  const [currentPath, setCurrentPath] = createSignal('');
+  const [selectedFile, setSelectedFile] = createSignal<FileEntry | null>(null);
+  const [fileContent, setFileContent] = createSignal('');
+  const [isSavingFile, setIsSavingFile] = createSignal(false);
+  const [isFileLoading, setIsFileLoading] = createSignal(false);
+  const [fileList, setFileList] = createSignal<FileEntry[]>([]);
+  const [fileError, setFileError] = createSignal('');
+  const [saveSuccess, setSaveSuccess] = createSignal(false);
+
+  let lineNumbersRef: HTMLDivElement | undefined;
+
+  const relativePath = (fullPath: string) => {
+    const root = props.task?.absolute_project_path || props.task?.project_path || '';
+    if (!fullPath || !root) return '';
+    if (fullPath === root) return './';
+    if (fullPath.startsWith(root)) {
+      let rel = fullPath.substring(root.length);
+      if (rel.startsWith('/')) {
+        rel = rel.substring(1);
+      }
+      return './' + rel;
+    }
+    return fullPath;
+  };
+
+  const fetchFiles = (path: string) => {
+    fetch(`/api/files?path=${encodeURIComponent(path)}`)
+      .then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          setFileList(data);
+          setFileError('');
+          return;
+        }
+        const err = await res.json().catch(() => ({}));
+        setFileError(err.error || `Failed to load files (HTTP ${res.status})`);
+      })
+      .catch((e) => {
+        setFileError(e.message || "Failed to fetch directory contents.");
+      });
+  };
+
+  const selectFile = (entry: FileEntry) => {
+    setSelectedFile(entry);
+    setIsFileLoading(true);
+    setFileError('');
+    setSaveSuccess(false);
+    fetch(`/api/files/read?path=${encodeURIComponent(entry.path)}`)
+      .then(async (res) => {
+        if (res.ok) {
+          const text = await res.text();
+          setFileContent(text);
+          return;
+        }
+        const err = await res.json().catch(() => ({}));
+        setFileError(err.error || `Failed to read file (HTTP ${res.status})`);
+        setFileContent('');
+      })
+      .catch((e) => {
+        setFileError(e.message || "Failed to read file.");
+        setFileContent('');
+      })
+      .finally(() => {
+        setIsFileLoading(false);
+      });
+  };
+
+  const saveFile = () => {
+    const file = selectedFile();
+    if (!file) return;
+    setIsSavingFile(true);
+    setFileError('');
+    setSaveSuccess(false);
+    fetch('/api/files', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        path: file.path,
+        content: fileContent(),
+      }),
+    })
+      .then(async (res) => {
+        if (res.ok) {
+          setSaveSuccess(true);
+          setTimeout(() => setSaveSuccess(false), 3000);
+          
+          // Refresh the file list of the current directory to show updated details
+          fetchFiles(currentPath());
+          
+          // Local update to the active file's metadata (especially size)
+          const activeFile = selectedFile();
+          if (activeFile) {
+            setSelectedFile({
+              ...activeFile,
+              size: new Blob([fileContent()]).size
+            });
+          }
+          return;
+        }
+        const err = await res.json().catch(() => ({}));
+        setFileError(err.error || `Failed to save file (HTTP ${res.status})`);
+      })
+      .catch((e) => {
+        setFileError(e.message || "Failed to save file.");
+      })
+      .finally(() => {
+        setIsSavingFile(false);
+      });
+  };
+
+  const handleScroll = (e: Event) => {
+    if (lineNumbersRef && e.currentTarget) {
+      lineNumbersRef.scrollTop = (e.currentTarget as HTMLTextAreaElement).scrollTop;
+    }
+  };
+
+  const lineCount = () => {
+    const content = fileContent();
+    if (!content) return 1;
+    return content.split('\n').length;
+  };
+
+
+
 
   const isOpencodeSession = () => props.task?.session_id?.startsWith('opencode|') ?? false;
   
@@ -365,10 +550,11 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
     }
   };
 
-  // Synchronize internal state when the selected task changes
+  // Synchronize internal state when the selected task changes or the modal is opened
   createEffect(() => {
     const t = props.task;
-    if (t) {
+    const isOpen = props.isOpen;
+    if (t && isOpen) {
       setEditTitle(t.title);
       setEditPath(t.project_path);
       setEditDesc(t.description || '');
@@ -376,9 +562,27 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
       setMessages([]);
       setErrorMsg('');
       setInputText('');
+      
+      // Reset files/tab state
+      setActiveTab(isOpencodeSession() ? 'chat' : 'files');
+      const root = t.absolute_project_path || t.project_path || '';
+      setCurrentPath(root);
+      setSelectedFile(null);
+      setFileContent('');
+      setFileList([]);
+      setFileError('');
+      setSaveSuccess(false);
+
+      // Force fetch the directory files
+      if (root) {
+        fetchFiles(root);
+      }
     }
-    setIsEditing(false);
+    if (!isOpen) {
+      setIsEditing(false);
+    }
   });
+
 
   // Listen for real-time events when modal is open and has an opencode session
   createEffect(() => {
@@ -560,22 +764,48 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
                       onBlur={() => setTimeout(() => setShowEditPathSuggestions(false), 200)}
                       class="w-full text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-indigo-500 focus:outline-none mb-3"
                     />
-                    <Show when={showEditPathSuggestions() && editFilteredPaths().length > 0}>
-                      <div class="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-700 rounded-md shadow-lg max-h-48 overflow-y-auto">
-                        <For each={editFilteredPaths()}>
-                          {(path) => (
-                            <button
-                              type="button"
-                              class="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
-                              onClick={() => {
-                                setEditPath(path);
-                                setShowEditPathSuggestions(false);
-                              }}
-                            >
-                              {path}
-                            </button>
-                          )}
-                        </For>
+                    <Show when={showEditPathSuggestions() && (editFilteredPaths().length > 0 || editDirRecommendations().length > 0)}>
+                      <div class="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-700 rounded-md shadow-lg max-h-60 overflow-y-auto divide-y divide-gray-700/50">
+                        <Show when={editFilteredPaths().length > 0}>
+                          <div class="p-1">
+                            <div class="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500">Existing Task Paths</div>
+                            <For each={editFilteredPaths()}>
+                              {(path) => (
+                                <button
+                                  type="button"
+                                  class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
+                                  onClick={() => {
+                                    setEditPath(path);
+                                    setShowEditPathSuggestions(false);
+                                  }}
+                                >
+                                  {path}
+                                </button>
+                              )}
+                            </For>
+                          </div>
+                        </Show>
+                        <Show when={editDirRecommendations().length > 0}>
+                          <div class="p-1">
+                            <div class="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 font-semibold flex items-center gap-1">
+                              <span>📁</span> Directory Recommendations
+                            </div>
+                            <For each={editDirRecommendations()}>
+                              {(path) => (
+                                <button
+                                  type="button"
+                                  class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700 hover:text-white transition-colors truncate"
+                                  onClick={() => {
+                                    setEditPath(path);
+                                    setShowEditPathSuggestions(false);
+                                  }}
+                                >
+                                  {path}
+                                </button>
+                              )}
+                            </For>
+                          </div>
+                        </Show>
                       </div>
                     </Show>
                   </div>
@@ -608,9 +838,7 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
             onClick={() => { props.onClose(); setIsEditing(false); }}
           >
             <div 
-              class={`bg-gray-800 border border-gray-700 rounded-xl shadow-2xl w-full overflow-hidden transition-all duration-300 flex flex-col ${
-                isOpencodeSession() ? 'max-w-6xl h-[85vh]' : 'max-w-2xl max-h-[90vh]'
-              }`} 
+              class="bg-gray-800 border border-gray-700 rounded-xl shadow-2xl w-full h-[85vh] max-w-6xl overflow-hidden transition-all duration-300 flex flex-col" 
               onClick={e => e.stopPropagation()}
             >
               <div class="p-6 border-b border-gray-700 flex justify-between items-start shrink-0">
@@ -635,88 +863,283 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
                 </button>
               </div>
               
-              <div class={`flex-1 min-h-0 ${
-                isOpencodeSession() ? 'flex md:flex-row flex-col' : 'p-6 space-y-6 overflow-y-auto'
-              }`}>
-                <Show when={isOpencodeSession()}>
-                  <div class="md:w-[42%] w-full border-r border-gray-700/60 p-6 space-y-6 overflow-y-auto h-full min-h-0">
-                    {detailsContent}
-                  </div>
-                  <div class="md:w-[58%] w-full flex flex-col h-full bg-gray-900/40 min-h-0">
-                    
-                    {/* Chat Header */}
-                    <div class="px-6 py-3 border-b border-gray-700/60 bg-gray-800/30 flex items-center justify-between shrink-0">
-                      <div class="flex items-center gap-2">
-                        <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                        <span class="text-xs font-semibold text-gray-200">OpenCode Live Agent Session</span>
-                      </div>
-                      <span class="text-[10px] font-mono text-gray-500 truncate max-w-[200px]" title={rawSessionId()!}>
-                        {rawSessionId()}
-                      </span>
-                    </div>
-
-                    {/* Messages list */}
-                    <div 
-                      ref={messagesContainerRef}
-                      class="flex-1 overflow-y-auto p-6 space-y-4 min-h-0"
+              <div class="flex-1 min-h-0 flex md:flex-row flex-col">
+                <div class="md:w-[42%] w-full border-r border-gray-700/60 p-6 space-y-6 overflow-y-auto h-full min-h-0">
+                  {detailsContent}
+                </div>
+                <div class="md:w-[58%] w-full flex flex-col h-full bg-gray-900/40 min-h-0">
+                  
+                  {/* Tabs Header */}
+                  <div class="flex border-b border-gray-700/60 bg-gray-800/30 shrink-0">
+                    <Show when={isOpencodeSession()}>
+                      <button 
+                        type="button"
+                        onClick={() => setActiveTab('chat')}
+                        class={`flex-1 md:flex-none px-6 py-3 text-xs font-semibold border-b-2 transition-colors flex items-center justify-center gap-2 ${
+                          activeTab() === 'chat' 
+                            ? 'border-indigo-500 text-indigo-400 bg-gray-900/10' 
+                            : 'border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-700/10'
+                        }`}
+                      >
+                        <span class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                        Chat
+                      </button>
+                    </Show>
+                    <button 
+                      type="button"
+                      onClick={() => setActiveTab('files')}
+                      class={`flex-1 md:flex-none px-6 py-3 text-xs font-semibold border-b-2 transition-colors flex items-center justify-center gap-2 ${
+                        activeTab() === 'files' 
+                          ? 'border-indigo-500 text-indigo-400 bg-gray-900/10' 
+                          : 'border-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-700/10'
+                      }`}
                     >
-                      <Show when={messages().length === 0}>
-                        <div class="h-full flex flex-col items-center justify-center text-gray-500 space-y-2">
-                          <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                          </svg>
-                          <span class="text-xs">No messages in this session yet.</span>
-                        </div>
-                      </Show>
-                      <For each={messages()}>
-                        {(msg) => <MessageItem message={msg} />}
-                      </For>
-                    </div>
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+                      </svg>
+                      Files
+                    </button>
+                  </div>
 
-                    {/* Error message if any */}
-                    <Show when={errorMsg()}>
-                      <div class="px-6 py-2 bg-red-900/30 border-t border-red-700/50 text-[11px] text-red-300 flex items-center justify-between shrink-0">
-                        <span>{errorMsg()}</span>
-                        <button onClick={() => setErrorMsg('')} class="text-red-400 hover:text-red-200 font-semibold">Dismiss</button>
+                  {/* Tab Contents */}
+                  <div class="flex-1 min-h-0 relative">
+                    
+                    {/* Chat Tab */}
+                    <Show when={activeTab() === 'chat' && isOpencodeSession()}>
+                      <div class="absolute inset-0 flex flex-col min-h-0">
+                        {/* Messages list */}
+                        <div 
+                          ref={messagesContainerRef}
+                          class="flex-1 overflow-y-auto p-6 space-y-4 min-h-0"
+                        >
+                          <Show when={messages().length === 0}>
+                            <div class="h-full flex flex-col items-center justify-center text-gray-500 space-y-2">
+                              <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                              </svg>
+                              <span class="text-xs">No messages in this session yet.</span>
+                            </div>
+                          </Show>
+                          <For each={messages()}>
+                            {(msg) => <MessageItem message={msg} />}
+                          </For>
+                        </div>
+
+                        {/* Error message if any */}
+                        <Show when={errorMsg()}>
+                          <div class="px-6 py-2 bg-red-900/30 border-t border-red-700/50 text-[11px] text-red-300 flex items-center justify-between shrink-0">
+                            <span>{errorMsg()}</span>
+                            <button type="button" onClick={() => setErrorMsg('')} class="text-red-400 hover:text-red-200 font-semibold">Dismiss</button>
+                          </div>
+                        </Show>
+
+                        {/* Prompt Input */}
+                        <form 
+                          onSubmit={handleSendMessage}
+                          class="p-4 border-t border-gray-700/60 bg-gray-800/40 flex gap-2 items-center shrink-0"
+                        >
+                          <input 
+                            type="text" 
+                            placeholder="Ask opencode..."
+                            value={inputText()}
+                            onInput={e => setInputText(e.currentTarget.value)}
+                            disabled={isSending()}
+                            class="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-4 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50"
+                          />
+                          <button 
+                            type="submit"
+                            disabled={isSending() || !inputText().trim()}
+                            class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-all active:scale-95 shadow-lg shadow-indigo-500/10 flex items-center gap-1.5 disabled:opacity-50 disabled:scale-100 shrink-0"
+                          >
+                            <Show when={isSending()}>
+                              <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                            </Show>
+                            Send
+                          </button>
+                        </form>
                       </div>
                     </Show>
 
-                    {/* Prompt Input */}
-                    <form 
-                      onSubmit={handleSendMessage}
-                      class="p-4 border-t border-gray-700/60 bg-gray-800/40 flex gap-2 items-center shrink-0"
-                    >
-                      <input 
-                        type="text" 
-                        placeholder="Ask opencode..."
-                        value={inputText()}
-                        onInput={e => setInputText(e.currentTarget.value)}
-                        disabled={isSending()}
-                        class="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-4 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50"
-                      />
-                      <button 
-                        type="submit"
-                        disabled={isSending() || !inputText().trim()}
-                        class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-all active:scale-95 shadow-lg shadow-indigo-500/10 flex items-center gap-1.5 disabled:opacity-50 disabled:scale-100 shrink-0"
-                      >
-                        <Show when={isSending()}>
-                          <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                        </Show>
-                        Send
-                      </button>
-                    </form>
+                    {/* Files Tab */}
+                    <Show when={activeTab() === 'files'}>
+                      <div class="absolute inset-0 flex min-h-0 divide-x divide-gray-700/60">
+                        
+                        {/* File Browser Sidebar */}
+                        <div class="w-56 shrink-0 flex flex-col h-full bg-gray-950/20 overflow-hidden">
+                          <div class="px-3 py-2 border-b border-gray-700/60 flex items-center justify-between bg-gray-900/10 shrink-0">
+                            <span class="text-[10px] uppercase font-bold tracking-wider text-gray-400">Project Files</span>
+                            <span class="text-[10px] text-gray-500 truncate max-w-[100px] font-mono" title={relativePath(currentPath())}>
+                              {relativePath(currentPath())}
+                            </span>
+                          </div>
+                          
+                          <div class="flex-1 overflow-y-auto p-2 space-y-0.5">
+                            {/* Parent directory navigation */}
+                            <Show when={currentPath() !== (props.task?.absolute_project_path || props.task?.project_path || '')}>
+                              <button 
+                                type="button"
+                                onClick={() => {
+                                  const parts = currentPath().split('/');
+                                  parts.pop();
+                                  const parent = parts.join('/');
+                                  const root = props.task?.absolute_project_path || props.task?.project_path || '';
+                                  if (parent.startsWith(root)) {
+                                    setCurrentPath(parent);
+                                    fetchFiles(parent);
+                                  }
+                                }}
+                                class="w-full text-left px-2.5 py-1.5 text-xs text-indigo-300 hover:bg-gray-800 rounded flex items-center gap-1.5 font-medium transition-colors"
+                              >
+                                <span class="text-xs">📁</span>
+                                <span>..</span>
+                              </button>
+                            </Show>
 
+                            {/* Empty list */}
+                            <Show when={fileList().length === 0}>
+                              <div class="p-3 text-xs text-gray-500 italic">No files found</div>
+                            </Show>
+
+                            {/* List of files/directories */}
+                            <For each={fileList()}>
+                              {(entry) => (
+                                <Show 
+                                  when={entry.is_dir}
+                                  fallback={
+                                    <button 
+                                      type="button"
+                                      onClick={() => selectFile(entry)}
+                                      class={`w-full text-left px-2.5 py-1.5 text-xs rounded flex items-center gap-1.5 truncate transition-colors ${
+                                        selectedFile()?.path === entry.path 
+                                          ? 'bg-indigo-600/30 text-indigo-200 font-semibold' 
+                                          : 'text-gray-300 hover:bg-gray-800'
+                                      }`}
+                                    >
+                                      <span class="text-xs opacity-70">📄</span>
+                                      <span class="truncate" title={entry.name}>{entry.name}</span>
+                                    </button>
+                                  }
+                                >
+                                  <button 
+                                    type="button"
+                                    onClick={() => {
+                                      setCurrentPath(entry.path);
+                                      fetchFiles(entry.path);
+                                    }}
+                                    class="w-full text-left px-2.5 py-1.5 text-xs text-gray-300 hover:bg-gray-800 rounded flex items-center gap-1.5 truncate transition-colors font-medium"
+                                  >
+                                    <span class="text-xs opacity-70">📁</span>
+                                    <span class="truncate" title={entry.name}>{entry.name}</span>
+                                  </button>
+                                </Show>
+                              )}
+                            </For>
+                          </div>
+                        </div>
+
+                        {/* Editor Area */}
+                        <div class="flex-1 flex flex-col h-full bg-gray-950/40 min-w-0 overflow-hidden">
+                          <Show 
+                            when={selectedFile()}
+                            fallback={
+                              <div class="flex-1 flex flex-col items-center justify-center text-gray-500 space-y-3">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                                <div class="text-xs text-center">
+                                  <p class="font-medium text-gray-400">No file selected</p>
+                                  <p class="text-[10px] text-gray-600 mt-1">Select a file from the sidebar to view or edit</p>
+                                </div>
+                              </div>
+                            }
+                          >
+                            {/* Editor Top Bar */}
+                            <div class="px-4 py-2.5 bg-gray-800/50 border-b border-gray-700/60 flex items-center justify-between shrink-0">
+                              <div class="flex items-center gap-2 min-w-0">
+                                <span class="text-xs font-semibold text-gray-200 truncate" title={selectedFile()?.path}>
+                                  {relativePath(selectedFile()?.path || '')}
+                                </span>
+                                <span class="text-[9px] text-gray-500 font-mono shrink-0">
+                                  ({(selectedFile()?.size || 0).toLocaleString()} B)
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={saveFile}
+                                disabled={isSavingFile()}
+                                class="bg-indigo-600 hover:bg-indigo-500 text-white rounded px-3 py-1.5 text-xs font-semibold transition-all active:scale-95 shadow-md shadow-indigo-500/10 flex items-center gap-1.5 disabled:opacity-50"
+                              >
+                                <Show when={isSavingFile()}>
+                                  <svg class="animate-spin h-3.5 w-3.5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                  </svg>
+                                </Show>
+                                Save Changes
+                              </button>
+                            </div>
+
+                            {/* Error / Success Banners */}
+                            <Show when={fileError()}>
+                              <div class="px-4 py-2 bg-red-950/80 border-b border-red-700/50 text-xs text-red-300 flex items-center justify-between shrink-0">
+                                <span class="truncate">{fileError()}</span>
+                                <button type="button" onClick={() => setFileError('')} class="text-red-400 hover:text-red-200 font-semibold pl-2">Dismiss</button>
+                              </div>
+                            </Show>
+                            <Show when={saveSuccess()}>
+                              <div class="px-4 py-2 bg-green-950/80 border-b border-green-700/50 text-xs text-green-300 flex items-center justify-between shrink-0">
+                                <span>File saved successfully.</span>
+                                <button type="button" onClick={() => setSaveSuccess(false)} class="text-green-400 hover:text-green-200 font-semibold pl-2">Dismiss</button>
+                              </div>
+                            </Show>
+
+                            {/* Editor Area with Line Numbers */}
+                            <div class="flex-1 min-h-0 relative flex bg-gray-950/80 font-mono text-xs">
+                              <Show 
+                                when={isFileLoading()}
+                                fallback={
+                                  <>
+                                    {/* Line Numbers */}
+                                    <div 
+                                      ref={lineNumbersRef}
+                                      class="select-none text-right pr-3 pl-2 py-3 text-gray-600 bg-gray-950 border-r border-gray-800/80 w-12 shrink-0 overflow-hidden font-mono text-xs leading-5"
+                                    >
+                                      <For each={Array.from({ length: lineCount() }, (_, i) => i + 1)}>
+                                        {(num) => <div class="h-5">{num}</div>}
+                                      </For>
+                                    </div>
+                                    {/* Textarea */}
+                                    <textarea
+                                      value={fileContent()}
+                                      onInput={(e) => setFileContent(e.currentTarget.value)}
+                                      onScroll={handleScroll}
+                                      class="flex-1 bg-transparent text-gray-300 px-3 py-3 focus:outline-none resize-none overflow-y-auto font-mono text-xs leading-5 whitespace-pre outline-none"
+                                      spellcheck={false}
+                                    />
+                                  </>
+                                }
+                              >
+                                <div class="flex-1 flex items-center justify-center text-gray-500">
+                                  <svg class="animate-spin h-6 w-6 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                  </svg>
+                                </div>
+                              </Show>
+                            </div>
+
+                          </Show>
+                        </div>
+
+                      </div>
+                    </Show>
                   </div>
-                </Show>
-                <Show when={!isOpencodeSession()}>
-                  <div class="p-6 space-y-6 overflow-y-auto">
-                    {detailsContent}
-                  </div>
-                </Show>
+                </div>
               </div>
+
               
               <div class="p-6 border-t border-gray-700 bg-gray-800/50 flex justify-end gap-3 shrink-0">
                 <Show when={isEditing()}>
