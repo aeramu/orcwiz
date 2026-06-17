@@ -116,26 +116,63 @@ impl Agent for OpencodeAgent {
         if let Ok(SessionId::Sdk(opencode_session_id)) = session_id.parse::<SessionId>() {
             if self.is_server_reachable().await {
                 let server_url = self.server_url.as_ref().unwrap();
-                let list_url = format!("{}/session", server_url);
-                match self.client.get(&list_url).send().await {
+                let status_url = format!("{}/session/status", server_url);
+                let is_busy = match self.client.get(&status_url)
+                    .query(&[("directory", project_path.to_string_lossy().as_ref())])
+                    .send()
+                    .await {
                     Ok(resp) => {
-                        if let Ok(sessions) = resp.json::<Vec<serde_json::Value>>().await {
-                            let exists = sessions
-                                .iter()
-                                .any(|s| s["id"].as_str() == Some(&opencode_session_id));
-                            if exists {
-                                Ok(AgentStatus::Running)
+                        if resp.status().is_success() {
+                            if let Ok(status_map) = resp.json::<std::collections::HashMap<String, serde_json::Value>>().await {
+                                status_map.contains_key(&opencode_session_id)
                             } else {
-                                Ok(AgentStatus::Failed(
-                                    "Session no longer exists on server".to_string(),
-                                ))
+                                warn!("Failed to parse session status JSON from server");
+                                true
                             }
                         } else {
+                            warn!("Session status request returned status {}", resp.status());
+                            true
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to query session status from server: {}", e);
+                        true
+                    }
+                };
+
+                if is_busy {
+                    return Ok(AgentStatus::Running);
+                }
+
+                let list_url = format!("{}/session", server_url);
+                match self.client.get(&list_url)
+                    .query(&[("directory", project_path.to_string_lossy().as_ref())])
+                    .send()
+                    .await {
+                    Ok(resp) => {
+                        if resp.status().is_success() {
+                            if let Ok(sessions) = resp.json::<Vec<serde_json::Value>>().await {
+                                let exists = sessions
+                                    .iter()
+                                    .any(|s| s["id"].as_str() == Some(&opencode_session_id));
+                                if exists {
+                                    Ok(AgentStatus::Success)
+                                } else {
+                                    Ok(AgentStatus::Failed(
+                                        "Session no longer exists on server".to_string(),
+                                    ))
+                                }
+                            } else {
+                                warn!("Failed to parse session list JSON from server");
+                                Ok(AgentStatus::Running)
+                            }
+                        } else {
+                            warn!("Session list request returned status {}", resp.status());
                             Ok(AgentStatus::Running)
                         }
                     }
                     Err(e) => {
-                        warn!("Failed to query sessions from server: {}", e);
+                        warn!("Failed to query session list from server: {}", e);
                         Ok(AgentStatus::Running)
                     }
                 }
