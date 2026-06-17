@@ -277,7 +277,6 @@ impl Agent for OpencodeAgent {
                 let client = reqwest::Client::new();
                 let list_url = format!("{}/session", server_url);
                 match client.get(&list_url)
-                    .query(&[("directory", project_path.to_string_lossy().as_ref())])
                     .send()
                     .await {
                     Ok(resp) => {
