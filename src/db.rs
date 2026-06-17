@@ -96,6 +96,12 @@ impl Db {
         Ok(())
     }
 
+    pub fn delete_task(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn list_tasks(&self) -> Result<Vec<Task>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, title, description, status, project_path, session_id, parent_id, created_at FROM tasks ORDER BY created_at ASC")?;
