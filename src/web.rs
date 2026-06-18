@@ -109,6 +109,7 @@ struct TaskResponse {
     absolute_project_path: String,
     session_id: Option<String>,
     parent_id: Option<i64>,
+    assigned_agent: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -149,6 +150,7 @@ async fn list_tasks(
                         absolute_project_path: abs_path,
                         session_id: t.session_id,
                         parent_id: t.parent_id,
+                        assigned_agent: t.assigned_agent,
                         created_at: t.created_at,
                     }
                 })
@@ -178,6 +180,7 @@ async fn get_task(
                 absolute_project_path: abs_path,
                 session_id: t.session_id,
                 parent_id: t.parent_id,
+                assigned_agent: t.assigned_agent,
                 created_at: t.created_at,
             };
             Ok(Json(res))
@@ -199,6 +202,7 @@ struct AddTaskRequest {
     project_path: String,
     description: Option<String>,
     parent_id: Option<i64>,
+    assigned_agent: Option<String>,
 }
 
 async fn add_task(
@@ -210,6 +214,7 @@ async fn add_task(
         &payload.project_path,
         payload.description.as_deref(),
         payload.parent_id,
+        payload.assigned_agent.as_deref(),
     ) {
         Ok(id) => Ok(Json(serde_json::json!({ "id": id }))),
         Err(e) => Err((
@@ -244,6 +249,7 @@ struct UpdateDetailsRequest {
     project_path: Option<String>,
     description: Option<String>,
     parent_id: Option<i64>,
+    assigned_agent: Option<String>,
 }
 
 async fn update_details(
@@ -277,12 +283,21 @@ async fn update_details(
         ));
     }
 
+    let assigned_agent = payload.assigned_agent.as_ref().map(|s| {
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.as_str())
+        }
+    });
+
     match state.db.update_task_details(
         id,
         payload.title.as_deref(),
         payload.project_path.as_deref(),
         payload.description.as_deref(),
         Some(payload.parent_id),
+        assigned_agent,
     ) {
         Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
         Err(e) => Err((

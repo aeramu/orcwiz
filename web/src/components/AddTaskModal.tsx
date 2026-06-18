@@ -6,7 +6,8 @@ type AddTaskModalProps = {
   isOpen: boolean;
   onClose: () => void;
   tasks: Task[];
-  onAddTask: (title: string, path: string, desc: string, parentId: string) => Promise<void>;
+  agents: any[];
+  onAddTask: (title: string, path: string, desc: string, parentId: string, assignedAgent: string) => Promise<void>;
 };
 
 export function AddTaskModal(props: AddTaskModalProps) {
@@ -14,6 +15,7 @@ export function AddTaskModal(props: AddTaskModalProps) {
   const [newPath, setNewPath] = createSignal('');
   const [newDesc, setNewDesc] = createSignal('');
   const [newParentId, setNewParentId] = createSignal('');
+  const [assignedAgent, setAssignedAgent] = createSignal('');
   const [showPathSuggestions, setShowPathSuggestions] = createSignal(false);
   const [dirRecommendations, setDirRecommendations] = createSignal<string[]>([]);
   let debounceTimer: number | undefined;
@@ -74,11 +76,12 @@ export function AddTaskModal(props: AddTaskModalProps) {
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
     if (!newTitle() || !newPath()) return;
-    await props.onAddTask(newTitle(), newPath(), newDesc(), newParentId());
+    await props.onAddTask(newTitle(), newPath(), newDesc(), newParentId(), assignedAgent());
     setNewTitle('');
     setNewPath('');
     setNewDesc('');
     setNewParentId('');
+    setAssignedAgent('');
   };
 
   return (
@@ -178,6 +181,22 @@ export function AddTaskModal(props: AddTaskModalProps) {
                 class="w-full bg-gray-900 border border-gray-700 rounded-md px-4 py-2 text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-colors resize-none"
                 placeholder="Add any specific context or instructions..."
               ></textarea>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-400 mb-1">Assign Agent (Optional)</label>
+              <select
+                value={assignedAgent()}
+                onChange={e => setAssignedAgent(e.currentTarget.value)}
+                class="w-full bg-gray-900 border border-gray-700 rounded-md px-4 py-2 text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-colors"
+              >
+                <option value="">No Agent Assigned</option>
+                <For each={props.agents}>
+                  {(agent) => (
+                    <option value={agent.name}>{agent.name} - {agent.description || 'No description'}</option>
+                  )}
+                </For>
+              </select>
             </div>
             
             <div>

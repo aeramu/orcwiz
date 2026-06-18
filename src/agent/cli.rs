@@ -46,6 +46,7 @@ impl Agent for GenericCliAgent {
         project_path: &Path,
         title: &str,
         description: &str,
+        _assigned_agent: Option<&str>,
         on_complete: Box<dyn FnOnce(AgentStatus) + Send + 'static>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let prompt = format!("Task: {}\nDescription: {}", title, description);

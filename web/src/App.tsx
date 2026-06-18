@@ -1,4 +1,4 @@
-import { createSignal, onMount, For } from 'solid-js';
+import { createSignal, onMount, For, createEffect } from 'solid-js';
 import type { Task, Column, OrcwizConfig } from './types';
 import { KanbanColumn } from './components/KanbanColumn';
 import { AddTaskModal } from './components/AddTaskModal';
@@ -21,6 +21,7 @@ const COLUMNS_MAP: Record<string, Column> = COLUMNS.reduce((acc, col) => {
 function App() {
   const [tasks, setTasks] = createSignal<Task[]>([]);
   const [config, setConfig] = createSignal<OrcwizConfig | null>(null);
+  const [agents, setAgents] = createSignal<any[]>([]);
   
   // Modal state
   const [showModal, setShowModal] = createSignal(false);
@@ -48,12 +49,36 @@ function App() {
     }
   };
 
+  const fetchAgents = async () => {
+    const serverUrl = config()?.opencode_server_url;
+    if (!serverUrl) return;
+    try {
+      const headers: Record<string, string> = {};
+      const authHeader = config()?.opencode_auth_header;
+      if (authHeader) {
+        headers['Authorization'] = authHeader;
+      }
+      const res = await fetch(`${serverUrl}/agent`, { headers });
+      if (res.ok) {
+        setAgents(await res.json());
+      }
+    } catch (e) {
+      console.error("Failed to fetch agents", e);
+    }
+  };
+
   onMount(() => {
     fetchTasks();
     fetchConfig();
     // Poll every 5 seconds for updates
     const interval = setInterval(fetchTasks, 5000);
     return () => clearInterval(interval);
+  });
+
+  createEffect(() => {
+    if (config()) {
+      fetchAgents();
+    }
   });
 
   const updateStatus = async (id: number, status: string) => {
@@ -91,7 +116,7 @@ function App() {
     }
   };
 
-  const handleAddTask = async (title: string, path: string, desc: string, parentId: string) => {
+  const handleAddTask = async (title: string, path: string, desc: string, parentId: string, assignedAgent: string) => {
     try {
       const res = await fetch('/api/tasks', {
         method: 'POST',
@@ -100,7 +125,8 @@ function App() {
           title,
           project_path: path,
           description: desc || null,
-          parent_id: parentId ? parseInt(parentId, 10) : null
+          parent_id: parentId ? parseInt(parentId, 10) : null,
+          assigned_agent: assignedAgent || null
         })
       });
       if (res.ok) {
@@ -136,7 +162,7 @@ function App() {
     }
   };
 
-  const handleUpdateTask = async (title: string, path: string, desc: string, parentId: string) => {
+  const handleUpdateTask = async (title: string, path: string, desc: string, parentId: string, assignedAgent: string) => {
     const t = selectedTask();
     if (!t) return;
     
@@ -148,7 +174,8 @@ function App() {
           title: title || undefined,
           project_path: path || undefined,
           description: desc || undefined,
-          parent_id: parentId ? parseInt(parentId, 10) : null
+          parent_id: parentId ? parseInt(parentId, 10) : null,
+          assigned_agent: assignedAgent === "" ? null : (assignedAgent || undefined)
         })
       });
       
@@ -160,7 +187,8 @@ function App() {
           title: title || t.title,
           project_path: path || t.project_path,
           description: desc || t.description,
-          parent_id: parentId ? parseInt(parentId, 10) : null
+          parent_id: parentId ? parseInt(parentId, 10) : null,
+          assigned_agent: assignedAgent || null
         });
       } else {
         const err = await res.json();
@@ -235,6 +263,7 @@ function App() {
         isOpen={showModal()}
         onClose={() => setShowModal(false)}
         tasks={tasks()}
+        agents={agents()}
         onAddTask={handleAddTask}
       />
 
@@ -245,6 +274,7 @@ function App() {
         tasks={tasks()}
         columnsMap={COLUMNS_MAP}
         columns={COLUMNS}
+        agents={agents()}
         onDelete={handleDeleteTask}
         onUpdate={handleUpdateTask}
         config={config()}

@@ -27,12 +27,17 @@ impl Orchestrator {
                 if let Ok(tasks) = db.list_tasks() {
                     for task in tasks {
                         if task.status == "todo" {
+                            // Only run tasks that have been assigned
+                            if task.assigned_agent.is_none() {
+                                continue;
+                            }
                             info!("Found todo task: {}", task.title);
                             let _ = db.update_task_status(task.id, "in_progress");
 
                             let desc = task.description.clone().unwrap_or_default();
                             let title = task.title.clone();
                             let task_id = task.id;
+                            let assigned_agent = task.assigned_agent.clone();
 
                             let project_path = match runner.prepare_project(&task.project_path).await {
                                 Ok(p) => p,
@@ -63,7 +68,7 @@ impl Orchestrator {
 
                             tokio::spawn(async move {
                                 match agent_for_spawn
-                                    .start_task(task_id, &project_path, &title, &desc, on_complete)
+                                    .start_task(task_id, &project_path, &title, &desc, assigned_agent.as_deref(), on_complete)
                                     .await
                                 {
                                     Ok(sess_id) => {

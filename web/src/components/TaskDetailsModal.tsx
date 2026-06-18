@@ -12,8 +12,9 @@ type TaskDetailsModalProps = {
   tasks: Task[];
   columnsMap: Record<string, Column>;
   columns: Column[];
+  agents: any[];
   onDelete: () => Promise<void>;
-  onUpdate: (title: string, path: string, desc: string, parentId: string) => Promise<void>;
+  onUpdate: (title: string, path: string, desc: string, parentId: string, assignedAgent: string) => Promise<void>;
   config: OrcwizConfig | null;
 };
 
@@ -23,6 +24,7 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
   const [editPath, setEditPath] = createSignal('');
   const [editDesc, setEditDesc] = createSignal('');
   const [editParentId, setEditParentId] = createSignal('');
+  const [editAssignedAgent, setEditAssignedAgent] = createSignal('');
   const [showEditPathSuggestions, setShowEditPathSuggestions] = createSignal(false);
   const [editDirRecommendations, setEditDirRecommendations] = createSignal<string[]>([]);
   let editDebounceTimer: number | undefined;
@@ -85,6 +87,7 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
       setEditPath(t.project_path);
       setEditDesc(t.description || '');
       setEditParentId(t.parent_id?.toString() || '');
+      setEditAssignedAgent(t.assigned_agent || '');
       
       // Reset files/tab state
       setActiveTab(isOpencodeSession() ? 'chat' : 'files');
@@ -102,7 +105,7 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
   };
 
   const handleSave = async () => {
-    await props.onUpdate(editTitle(), editPath(), editDesc(), editParentId());
+    await props.onUpdate(editTitle(), editPath(), editDesc(), editParentId(), editAssignedAgent());
     setIsEditing(false);
   };
 
@@ -259,18 +262,39 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
                     type="number" 
                     value={editParentId()}
                     onInput={e => setEditParentId(e.currentTarget.value)}
-                    class="w-full text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-indigo-500 focus:outline-none"
+                    class="w-full text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-indigo-500 focus:outline-none mb-3"
                   />
+                  <h3 class="text-sm font-medium text-gray-400 mb-2 mt-4">Assigned Agent</h3>
+                  <select 
+                    value={editAssignedAgent()}
+                    onChange={e => setEditAssignedAgent(e.currentTarget.value)}
+                    class="w-full text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-indigo-500 focus:outline-none"
+                  >
+                    <option value="">No Agent Assigned</option>
+                    <For each={props.agents}>
+                      {(agent) => (
+                        <option value={agent.name}>{agent.name}</option>
+                      )}
+                    </For>
+                  </select>
                 </Show>
               </div>
 
               <div>
                 <h3 class="text-sm font-medium text-gray-400 mb-2">Session ID</h3>
-                <div class="flex items-center text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-gray-700/50">
+                <div class="flex items-center text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-gray-700/50 mb-4">
                   <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2 text-indigo-400/80" viewBox="0 0 20 20" fill="currentColor">
                     <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
                   </svg>
                   <span class="font-mono truncate select-all">{task.session_id || 'Not started'}</span>
+                </div>
+
+                <h3 class="text-sm font-medium text-gray-400 mb-2">Assigned Agent</h3>
+                <div class="flex items-center text-sm text-gray-300 bg-gray-900/50 px-3 py-2 rounded-lg border border-gray-700/50">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2 text-indigo-400/80" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                  <span>{task.assigned_agent || 'Unassigned'}</span>
                 </div>
               </div>
             </div>

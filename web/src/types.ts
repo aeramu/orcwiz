@@ -7,6 +7,7 @@ export type Task = {
   absolute_project_path: string;
   session_id: string | null;
   parent_id: number | null;
+  assigned_agent: string | null;
   created_at: string;
 };
 

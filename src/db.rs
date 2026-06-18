@@ -12,6 +12,7 @@ pub struct Task {
     pub project_path: String,
     pub session_id: Option<String>,
     pub parent_id: Option<i64>,
+    pub assigned_agent: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -32,6 +33,7 @@ impl Db {
         
         // Auto-migration: try to add parent_id if it doesn't exist
         let _ = conn.execute("ALTER TABLE tasks ADD COLUMN parent_id INTEGER", []);
+        let _ = conn.execute("ALTER TABLE tasks ADD COLUMN assigned_agent TEXT", []);
 
         // We drop the old sessions table or just create tasks table
         conn.execute(
@@ -43,6 +45,7 @@ impl Db {
                 project_path TEXT NOT NULL,
                 session_id TEXT,
                 parent_id INTEGER,
+                assigned_agent TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (parent_id) REFERENCES tasks(id)
             )",
@@ -52,13 +55,20 @@ impl Db {
         Ok(Db { conn: Mutex::new(conn) })
     }
 
-    pub fn add_task(&self, title: &str, project_path: &str, description: Option<&str>, parent_id: Option<i64>) -> Result<i64> {
+    pub fn add_task(
+        &self,
+        title: &str,
+        project_path: &str,
+        description: Option<&str>,
+        parent_id: Option<i64>,
+        assigned_agent: Option<&str>,
+    ) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO tasks (title, description, status, project_path, parent_id, created_at) 
-             VALUES (?1, ?2, 'backlog', ?3, ?4, ?5)",
-            params![title, description, project_path, parent_id, now],
+            "INSERT INTO tasks (title, description, status, project_path, parent_id, assigned_agent, created_at) 
+             VALUES (?1, ?2, 'backlog', ?3, ?4, ?5, ?6)",
+            params![title, description, project_path, parent_id, assigned_agent, now],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -79,7 +89,15 @@ impl Db {
         Ok(())
     }
 
-    pub fn update_task_details(&self, id: i64, title: Option<&str>, project_path: Option<&str>, description: Option<&str>, parent_id: Option<Option<i64>>) -> Result<()> {
+    pub fn update_task_details(
+        &self,
+        id: i64,
+        title: Option<&str>,
+        project_path: Option<&str>,
+        description: Option<&str>,
+        parent_id: Option<Option<i64>>,
+        assigned_agent: Option<Option<&str>>,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         if let Some(t) = title {
             conn.execute("UPDATE tasks SET title = ?1 WHERE id = ?2", params![t, id])?;
@@ -93,6 +111,9 @@ impl Db {
         if let Some(pid) = parent_id {
             conn.execute("UPDATE tasks SET parent_id = ?1 WHERE id = ?2", params![pid, id])?;
         }
+        if let Some(agent) = assigned_agent {
+            conn.execute("UPDATE tasks SET assigned_agent = ?1 WHERE id = ?2", params![agent, id])?;
+        }
         Ok(())
     }
 
@@ -104,9 +125,9 @@ impl Db {
 
     pub fn list_tasks(&self) -> Result<Vec<Task>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, title, description, status, project_path, session_id, parent_id, created_at FROM tasks ORDER BY created_at ASC")?;
+        let mut stmt = conn.prepare("SELECT id, title, description, status, project_path, session_id, parent_id, assigned_agent, created_at FROM tasks ORDER BY created_at ASC")?;
         let task_iter = stmt.query_map([], |row| {
-            let created_at_str: String = row.get(7)?;
+            let created_at_str: String = row.get(8)?;
             let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
                 .unwrap_or_default()
                 .with_timezone(&Utc);
@@ -119,6 +140,7 @@ impl Db {
                 project_path: row.get(4)?,
                 session_id: row.get(5)?,
                 parent_id: row.get(6)?,
+                assigned_agent: row.get(7)?,
                 created_at,
             })
         })?;
@@ -132,9 +154,9 @@ impl Db {
 
     pub fn get_task(&self, id: i64) -> Result<Option<Task>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, title, description, status, project_path, session_id, parent_id, created_at FROM tasks WHERE id = ?1")?;
+        let mut stmt = conn.prepare("SELECT id, title, description, status, project_path, session_id, parent_id, assigned_agent, created_at FROM tasks WHERE id = ?1")?;
         let mut task_iter = stmt.query_map(params![id], |row| {
-            let created_at_str: String = row.get(7)?;
+            let created_at_str: String = row.get(8)?;
             let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
                 .unwrap_or_default()
                 .with_timezone(&Utc);
@@ -147,6 +169,7 @@ impl Db {
                 project_path: row.get(4)?,
                 session_id: row.get(5)?,
                 parent_id: row.get(6)?,
+                assigned_agent: row.get(7)?,
                 created_at,
             })
         })?;

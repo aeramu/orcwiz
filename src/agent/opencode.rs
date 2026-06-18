@@ -44,6 +44,7 @@ impl Agent for OpencodeAgent {
         project_path: &Path,
         title: &str,
         description: &str,
+        assigned_agent: Option<&str>,
         on_complete: Box<dyn FnOnce(AgentStatus) + Send + 'static>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         if self.is_server_reachable().await {
@@ -52,10 +53,14 @@ impl Agent for OpencodeAgent {
 
             // Create a session: POST /session
             let create_url = format!("{}/session", server_url);
-            let create_resp: serde_json::Value = self
-                .client
-                .post(&create_url)
-                .query(&[("directory", project_path.to_string_lossy().as_ref())])
+            let mut req = self.client.post(&create_url)
+                .query(&[("directory", project_path.to_string_lossy().as_ref())]);
+            if let Some(agent) = assigned_agent {
+                req = req.json(&serde_json::json!({
+                    "agent": agent
+                }));
+            }
+            let create_resp: serde_json::Value = req
                 .send()
                 .await?
                 .json()
@@ -73,11 +78,12 @@ impl Agent for OpencodeAgent {
             let prompt = format!("Task: {}\nDescription: {}", title, description);
             let session_id_payload = session_id.clone();
             let client = self.client.clone();
+            let assigned_agent_clone = assigned_agent.map(String::from);
 
             tokio::spawn(async move {
                 let message_url = format!("{}/session/{}/message", server_url_clone, session_id_payload);
 
-                let payload = serde_json::json!({
+                let mut payload = serde_json::json!({
                     "parts": [
                         {
                             "type": "text",
@@ -85,6 +91,11 @@ impl Agent for OpencodeAgent {
                         }
                     ]
                 });
+                if let Some(agent) = assigned_agent_clone {
+                    if let Some(obj) = payload.as_object_mut() {
+                        obj.insert("agent".to_string(), serde_json::json!(agent));
+                    }
+                }
 
                 let status = match client.post(&message_url).json(&payload).send().await {
                     Ok(resp) => {
@@ -104,7 +115,7 @@ impl Agent for OpencodeAgent {
 
         info!("OpenCode server is unreachable. Falling back to local CLI...");
         self.generic_cli
-            .start_task(task_id, project_path, title, description, on_complete)
+            .start_task(task_id, project_path, title, description, assigned_agent, on_complete)
             .await
     }
 

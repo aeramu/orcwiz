@@ -147,6 +147,7 @@ export function ChatTab(props: ChatTabProps) {
     try {
       await c.session.prompt({
         sessionID: sessId,
+        agent: props.task.assigned_agent || undefined,
         parts: [
           {
             type: 'text',
@@ -342,10 +343,8 @@ export function ChatTab(props: ChatTabProps) {
 
       const c = client();
       if (c) {
-        c.v2.event.subscribe({
-          location: {
-            directory
-          }
+        c.event.subscribe({
+          directory
         }, {
           signal: controller.signal,
           onSseError: (err) => {
