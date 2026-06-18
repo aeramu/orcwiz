@@ -1,4 +1,22 @@
-import { createSignal, createEffect, Show, For, createMemo } from 'solid-js';
+import { createSignal, createEffect, onCleanup, Show, For, createMemo } from 'solid-js';
+import { EditorView, lineNumbers, drawSelection } from '@codemirror/view';
+import { Compartment, EditorState } from '@codemirror/state';
+import { MergeView, unifiedMergeView } from '@codemirror/merge';
+import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
+import { oneDark } from '@codemirror/theme-one-dark';
+import { javascript } from '@codemirror/lang-javascript';
+import { html } from '@codemirror/lang-html';
+import { css } from '@codemirror/lang-css';
+import { python } from '@codemirror/lang-python';
+import { rust } from '@codemirror/lang-rust';
+import { json } from '@codemirror/lang-json';
+import { markdown } from '@codemirror/lang-markdown';
+import { cpp } from '@codemirror/lang-cpp';
+import { java } from '@codemirror/lang-java';
+import { xml } from '@codemirror/lang-xml';
+import { sql } from '@codemirror/lang-sql';
+import { go } from '@codemirror/lang-go';
+import { yaml } from '@codemirror/lang-yaml';
 import type { Task } from '../types';
 
 type GitTabProps = {
@@ -13,6 +31,167 @@ type GitFileStatus = {
   staged: boolean;
 };
 
+function getLanguageExtension(filename: string) {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+  switch (ext) {
+    case 'js': case 'jsx': case 'mjs': return javascript({ jsx: true });
+    case 'ts': case 'tsx': case 'mts': return javascript({ typescript: true, jsx: true });
+    case 'html': case 'htm': return html();
+    case 'css': case 'scss': case 'less': return css();
+    case 'py': return python();
+    case 'rs': return rust();
+    case 'json': return json();
+    case 'md': case 'mdx': return markdown();
+    case 'cpp': case 'cc': case 'c': case 'h': case 'hpp': return cpp();
+    case 'java': return java();
+    case 'xml': case 'svg': case 'toml': return xml();
+    case 'sql': return sql();
+    case 'go': return go();
+    case 'yaml': case 'yml': return yaml();
+    default: return null;
+  }
+}
+
+// Parse a unified diff string into { original, modified } document strings
+function parseDiffToDocuments(diffText: string): { original: string; modified: string } {
+  const lines = diffText.split('\n');
+  const originalLines: string[] = [];
+  const modifiedLines: string[] = [];
+
+  for (const line of lines) {
+    // Skip diff metadata headers
+    if (
+      line.startsWith('diff ') ||
+      line.startsWith('index ') ||
+      line.startsWith('--- ') ||
+      line.startsWith('+++ ') ||
+      line.startsWith('@@')
+    ) continue;
+
+    if (line.startsWith('-')) {
+      originalLines.push(line.slice(1));
+    } else if (line.startsWith('+')) {
+      modifiedLines.push(line.slice(1));
+    } else {
+      const content = line.startsWith(' ') ? line.slice(1) : line;
+      originalLines.push(content);
+      modifiedLines.push(content);
+    }
+  }
+
+  return {
+    original: originalLines.join('\n'),
+    modified: modifiedLines.join('\n'),
+  };
+}
+
+const editorTheme = EditorView.theme({
+  '&': {
+    fontSize: '12px',
+    fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace",
+    height: '100%',
+  },
+  '.cm-scroller': { overflow: 'auto', height: '100%' },
+  '.cm-content': { paddingTop: '8px', paddingBottom: '8px' },
+  '&.cm-focused': { outline: 'none' },
+  '.cm-gutters': { background: 'transparent', borderRight: '1px solid rgba(255,255,255,0.06)' },
+  '.cm-lineNumbers .cm-gutterElement': { minWidth: '36px', paddingRight: '10px' },
+  // Merge view chunk colors
+  '.cm-deletedChunk': { background: 'rgba(239,68,68,0.08)' },
+  '.cm-insertedChunk': { background: 'rgba(34,197,94,0.08)' },
+  '.cm-changedText': { background: 'rgba(99,102,241,0.15)' },
+  '.cm-deletedText': { background: 'rgba(239,68,68,0.18)' },
+});
+
+function DiffViewer(props: { diffText: string; filename: string }) {
+  let container: HTMLDivElement | undefined;
+  let mergeView: MergeView | undefined;
+  const langCompartmentA = new Compartment();
+  const langCompartmentB = new Compartment();
+
+  onCleanup(() => mergeView?.destroy());
+
+  createEffect(() => {
+    const { original, modified } = parseDiffToDocuments(props.diffText);
+    const langExt = getLanguageExtension(props.filename);
+
+    if (!mergeView) {
+      mergeView = new MergeView({
+        a: {
+          doc: original,
+          extensions: [
+            oneDark,
+            editorTheme,
+            syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+            EditorView.editable.of(false),
+            langCompartmentA.of(langExt ?? []),
+          ],
+        },
+        b: {
+          doc: modified,
+          extensions: [
+            oneDark,
+            editorTheme,
+            syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+            langCompartmentB.of(langExt ?? []),
+          ],
+        },
+        parent: container!,
+        orientation: 'a-b',
+        highlightChanges: true,
+        gutter: true,
+        revertControls: 'a-to-b',
+      });
+      return;
+    }
+
+    // Update documents and language when diffText or filename changes
+    const langExt2 = getLanguageExtension(props.filename);
+    mergeView.a.dispatch({
+      changes: { from: 0, to: mergeView.a.state.doc.length, insert: original },
+      effects: langCompartmentA.reconfigure(langExt2 ?? []),
+    });
+    mergeView.b.dispatch({
+      changes: { from: 0, to: mergeView.b.state.doc.length, insert: modified },
+      effects: langCompartmentB.reconfigure(langExt2 ?? []),
+    });
+  });
+
+  return <div ref={container} class="h-full w-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-merge-view]:h-full" />;
+}
+
+function UnifiedDiffViewer(props: { diffText: string; filename: string }) {
+  let container: HTMLDivElement | undefined;
+  let view: EditorView | undefined;
+
+  onCleanup(() => view?.destroy());
+
+  createEffect(() => {
+    const { original, modified } = parseDiffToDocuments(props.diffText);
+    const langExt = getLanguageExtension(props.filename);
+
+    view?.destroy();
+    view = new EditorView({
+      state: EditorState.create({
+        doc: modified,
+        extensions: [
+          oneDark,
+          editorTheme,
+          lineNumbers(),
+          drawSelection(),
+          syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          ...(langExt ? [langExt] : []),
+          unifiedMergeView({ original }),
+        ],
+      }),
+      parent: container!,
+    });
+  });
+
+  return <div ref={container} class="h-full w-full overflow-hidden [&_.cm-editor]:h-full" />;
+}
+
+
 export function GitTab(props: GitTabProps) {
   const [fileStatuses, setFileStatuses] = createSignal<GitFileStatus[]>([]);
   const [selectedFile, setSelectedFile] = createSignal<GitFileStatus | null>(null);
@@ -25,6 +204,7 @@ export function GitTab(props: GitTabProps) {
   const [isCommitting, setIsCommitting] = createSignal(false);
   const [isInitializing, setIsInitializing] = createSignal(false);
   const [actionInProgress, setActionInProgress] = createSignal<string | null>(null);
+  const [diffMode, setDiffMode] = createSignal<'split' | 'unified'>('split');
 
   const projectPath = () => props.task.absolute_project_path || props.task.project_path || '';
 
@@ -254,18 +434,7 @@ export function GitTab(props: GitTabProps) {
 
   // We will render status badges inline inside the lists
 
-  const getDiffLineClass = (line: string) => {
-    if (line.startsWith('+') && !line.startsWith('+++')) {
-      return 'bg-green-950/20 text-green-300 font-mono px-3 block h-5 leading-5 whitespace-pre';
-    }
-    if (line.startsWith('-') && !line.startsWith('---')) {
-      return 'bg-red-950/20 text-red-300 font-mono px-3 block h-5 leading-5 whitespace-pre';
-    }
-    if (line.startsWith('@@')) {
-      return 'bg-indigo-950/25 text-indigo-400/80 font-mono px-3 block h-5 leading-5 font-semibold';
-    }
-    return 'text-gray-300 font-mono px-3 block h-5 leading-5 whitespace-pre';
-  };
+
 
   return (
     <div class="absolute inset-0 flex min-h-0 divide-x divide-gray-700/60 animate-fade-in">
@@ -513,8 +682,35 @@ export function GitTab(props: GitTabProps) {
                 </span>
               </div>
 
-              {/* Context Actions */}
-              <div class="flex gap-2">
+              {/* View mode toggle + Context Actions */}
+              <div class="flex items-center gap-2">
+                {/* Split / Unified toggle */}
+                <div class="flex items-center bg-gray-900 border border-gray-700/60 rounded overflow-hidden text-[10px] font-semibold">
+                  <button
+                    type="button"
+                    onClick={() => setDiffMode('split')}
+                    class={`px-2.5 py-1 transition-colors ${
+                      diffMode() === 'split'
+                        ? 'bg-indigo-600 text-white'
+                        : 'text-gray-400 hover:text-gray-200'
+                    }`}
+                    title="Side-by-side diff"
+                  >
+                    Split
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDiffMode('unified')}
+                    class={`px-2.5 py-1 transition-colors ${
+                      diffMode() === 'unified'
+                        ? 'bg-indigo-600 text-white'
+                        : 'text-gray-400 hover:text-gray-200'
+                    }`}
+                    title="Inline unified diff"
+                  >
+                    Unified
+                  </button>
+                </div>
                 <Show when={!selectedFile()?.staged && selectedFile()?.status !== 'untracked'}>
                   <button
                     type="button"
@@ -551,18 +747,33 @@ export function GitTab(props: GitTabProps) {
             </div>
 
             {/* Diff Viewer Area */}
-            <div class="flex-1 min-h-0 relative flex bg-gray-950/80 font-mono text-xs overflow-y-auto py-3">
+            <div class="flex-1 min-h-0 relative bg-gray-950/80 overflow-hidden">
               <Show
                 when={isDiffLoading()}
                 fallback={
-                  <div class="w-full h-fit flex flex-col font-mono text-xs">
-                    <Show when={!diffContent() || diffContent().trim() === ''}>
-                      <div class="text-gray-500 italic p-4 text-xs font-sans">No changes found (or binary file)</div>
+                  <Show
+                    when={diffContent() && diffContent().trim() !== ''}
+                    fallback={
+                      <div class="flex items-center justify-center h-full text-gray-500 italic text-xs font-sans">
+                        No changes found (or binary file)
+                      </div>
+                    }
+                  >
+                    <Show
+                      when={diffMode() === 'split'}
+                      fallback={
+                        <UnifiedDiffViewer
+                          diffText={diffContent()}
+                          filename={selectedFile()?.name ?? ''}
+                        />
+                      }
+                    >
+                      <DiffViewer
+                        diffText={diffContent()}
+                        filename={selectedFile()?.name ?? ''}
+                      />
                     </Show>
-                    <For each={diffContent().split('\n')}>
-                      {(line) => <span class={getDiffLineClass(line)}>{line}</span>}
-                    </For>
-                  </div>
+                  </Show>
                 }
               >
                 <div class="absolute inset-0 flex items-center justify-center text-gray-500">

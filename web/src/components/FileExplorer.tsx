@@ -1,6 +1,24 @@
-import { createSignal, createEffect, Show, For } from 'solid-js';
+import { createSignal, createEffect, onCleanup, Show, For } from 'solid-js';
 import type { Task } from '../types';
 import { getRelativePath } from '../pathUtils';
+import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view';
+import { EditorState, Compartment } from '@codemirror/state';
+import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentOnInput, foldGutter } from '@codemirror/language';
+import { oneDark } from '@codemirror/theme-one-dark';
+import { javascript } from '@codemirror/lang-javascript';
+import { html } from '@codemirror/lang-html';
+import { css } from '@codemirror/lang-css';
+import { python } from '@codemirror/lang-python';
+import { rust } from '@codemirror/lang-rust';
+import { json } from '@codemirror/lang-json';
+import { markdown } from '@codemirror/lang-markdown';
+import { cpp } from '@codemirror/lang-cpp';
+import { java } from '@codemirror/lang-java';
+import { xml } from '@codemirror/lang-xml';
+import { sql } from '@codemirror/lang-sql';
+import { go } from '@codemirror/lang-go';
+import { yaml } from '@codemirror/lang-yaml';
 
 type FileExplorerProps = {
   task: Task;
@@ -23,6 +41,63 @@ type FileTreeItemProps = {
   onSelectFile: (entry: FileEntry) => void;
   onToggleExpand: (path: string) => void;
 };
+
+// Map file extensions to CodeMirror language extensions
+function getLanguageExtension(filename: string) {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+  switch (ext) {
+    case 'js':
+    case 'jsx':
+    case 'mjs':
+    case 'cjs':
+      return javascript({ jsx: true });
+    case 'ts':
+    case 'tsx':
+    case 'mts':
+    case 'cts':
+      return javascript({ typescript: true, jsx: true });
+    case 'html':
+    case 'htm':
+      return html();
+    case 'css':
+    case 'scss':
+    case 'less':
+      return css();
+    case 'py':
+    case 'pyw':
+      return python();
+    case 'rs':
+      return rust();
+    case 'json':
+    case 'jsonc':
+      return json();
+    case 'md':
+    case 'mdx':
+      return markdown();
+    case 'cpp':
+    case 'cc':
+    case 'cxx':
+    case 'c':
+    case 'h':
+    case 'hpp':
+      return cpp();
+    case 'java':
+      return java();
+    case 'xml':
+    case 'svg':
+    case 'toml':
+      return xml();
+    case 'sql':
+      return sql();
+    case 'go':
+      return go();
+    case 'yaml':
+    case 'yml':
+      return yaml();
+    default:
+      return null;
+  }
+}
 
 function FileTreeItem(props: FileTreeItemProps) {
   const isExpanded = () => !!props.expandedPaths()[props.entry.path];
@@ -114,6 +189,78 @@ function FileTreeItem(props: FileTreeItemProps) {
   );
 }
 
+// CodeMirror editor component
+function CodeEditor(props: { content: string; filename: string; onChange: (val: string) => void }) {
+  let container: HTMLDivElement | undefined;
+  let view: EditorView | undefined;
+  const languageCompartment = new Compartment();
+  const editableCompartment = new Compartment();
+
+  onCleanup(() => view?.destroy());
+
+  createEffect(() => {
+    const filename = props.filename;
+    const langExt = getLanguageExtension(filename);
+
+    if (!view) {
+      // Initial mount
+      const state = EditorState.create({
+        doc: props.content,
+        extensions: [
+          lineNumbers(),
+          highlightActiveLine(),
+          highlightActiveLineGutter(),
+          drawSelection(),
+          bracketMatching(),
+          indentOnInput(),
+          foldGutter(),
+          history(),
+          keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+          oneDark,
+          syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          languageCompartment.of(langExt ?? []),
+          editableCompartment.of(EditorView.editable.of(true)),
+          EditorView.theme({
+            '&': {
+              height: '100%',
+              fontSize: '12px',
+              fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace",
+            },
+            '.cm-scroller': { overflow: 'auto', height: '100%' },
+            '.cm-content': { paddingTop: '12px', paddingBottom: '12px' },
+            '&.cm-focused': { outline: 'none' },
+            '.cm-gutters': { background: 'transparent', borderRight: '1px solid rgba(255,255,255,0.06)' },
+            '.cm-lineNumbers .cm-gutterElement': { minWidth: '40px', paddingRight: '12px' },
+          }),
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged) props.onChange(update.state.doc.toString());
+          }),
+        ],
+      });
+
+      view = new EditorView({ state, parent: container! });
+      return;
+    }
+
+    // Reconfigure language when filename changes
+    view.dispatch({ effects: languageCompartment.reconfigure(langExt ?? []) });
+  });
+
+  // Sync content when it changes externally (file switch)
+  createEffect(() => {
+    const content = props.content;
+    if (!view) return;
+    const current = view.state.doc.toString();
+    if (current !== content) {
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: content },
+      });
+    }
+  });
+
+  return <div ref={container} class="h-full w-full overflow-hidden" />;
+}
+
 export function FileExplorer(props: FileExplorerProps) {
   const [rootPath, setRootPath] = createSignal('');
   const [selectedFile, setSelectedFile] = createSignal<FileEntry | null>(null);
@@ -124,8 +271,6 @@ export function FileExplorer(props: FileExplorerProps) {
   const [expandedPaths, setExpandedPaths] = createSignal<Record<string, boolean>>({});
   const [fileError, setFileError] = createSignal('');
   const [saveSuccess, setSaveSuccess] = createSignal(false);
-
-  let lineNumbersRef: HTMLDivElement | undefined;
 
   const relativePath = (fullPath: string) => {
     const root = props.task.absolute_project_path || props.task.project_path || '';
@@ -190,35 +335,22 @@ export function FileExplorer(props: FileExplorerProps) {
     setSaveSuccess(false);
     fetch('/api/files', {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        path: file.path,
-        content: fileContent(),
-      }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: file.path, content: fileContent() }),
     })
       .then(async (res) => {
         if (res.ok) {
           setSaveSuccess(true);
           setTimeout(() => setSaveSuccess(false), 3000);
-          
-          // Refresh the parent directory of the saved file to show updated details
           const activeFile = selectedFile();
           if (activeFile) {
             const lastSlash = activeFile.path.lastIndexOf('/');
             if (lastSlash !== -1) {
-              const parentPath = activeFile.path.substring(0, lastSlash);
-              fetchDirectory(parentPath);
+              fetchDirectory(activeFile.path.substring(0, lastSlash));
             } else {
               fetchDirectory(rootPath());
             }
-            
-            // Local update to the active file's metadata (especially size)
-            setSelectedFile({
-              ...activeFile,
-              size: new Blob([fileContent()]).size
-            });
+            setSelectedFile({ ...activeFile, size: new Blob([fileContent()]).size });
           }
           return;
         }
@@ -231,18 +363,6 @@ export function FileExplorer(props: FileExplorerProps) {
       .finally(() => {
         setIsSavingFile(false);
       });
-  };
-
-  const handleScroll = (e: Event) => {
-    if (lineNumbersRef && e.currentTarget) {
-      lineNumbersRef.scrollTop = (e.currentTarget as HTMLTextAreaElement).scrollTop;
-    }
-  };
-
-  const lineCount = () => {
-    const content = fileContent();
-    if (!content) return 1;
-    return content.split('\n').length;
   };
 
   // Reset/sync state when the active task changes or modal opens
@@ -259,9 +379,7 @@ export function FileExplorer(props: FileExplorerProps) {
       setFileError('');
       setSaveSuccess(false);
 
-      if (root) {
-        fetchDirectory(root);
-      }
+      if (root) fetchDirectory(root);
     }
   });
 
@@ -278,7 +396,6 @@ export function FileExplorer(props: FileExplorerProps) {
         </div>
         
         <div class="flex-1 overflow-y-auto p-2 space-y-0.5 column-scroll">
-          {/* List of files/directories */}
           <Show 
             when={directoryContents()[rootPath()]} 
             fallback={
@@ -337,9 +454,15 @@ export function FileExplorer(props: FileExplorerProps) {
               <span class="text-xs font-semibold text-gray-200 truncate" title={selectedFile()?.path}>
                 {relativePath(selectedFile()?.path || '')}
               </span>
-              <span class="text-[9px] text-gray-500 font-mono shrink-0">
-                ({(selectedFile()?.size || 0).toLocaleString()} B)
+              <span class="text-[9px] text-gray-500 font-mono shrink-0 bg-gray-800/60 px-1.5 py-0.5 rounded">
+                {(selectedFile()?.size || 0).toLocaleString()} B
               </span>
+              {/* Language badge */}
+              <Show when={selectedFile()?.name.includes('.')}>
+                <span class="text-[9px] text-indigo-400 font-mono shrink-0 bg-indigo-500/10 border border-indigo-500/20 px-1.5 py-0.5 rounded uppercase">
+                  {selectedFile()?.name.split('.').pop()}
+                </span>
+              </Show>
             </div>
             <button
               type="button"
@@ -371,33 +494,19 @@ export function FileExplorer(props: FileExplorerProps) {
             </div>
           </Show>
 
-          {/* Editor Area with Line Numbers */}
-          <div class="flex-1 min-h-0 relative flex bg-gray-950/80 font-mono text-xs">
+          {/* Editor */}
+          <div class="flex-1 min-h-0 relative overflow-hidden">
             <Show 
               when={isFileLoading()}
               fallback={
-                <>
-                  {/* Line Numbers */}
-                  <div 
-                    ref={lineNumbersRef}
-                    class="select-none text-right pr-3 pl-2 py-3 text-gray-600 bg-gray-950 border-r border-gray-800/80 w-12 shrink-0 overflow-hidden font-mono text-xs leading-5"
-                  >
-                    <For each={Array.from({ length: lineCount() }, (_, i) => i + 1)}>
-                      {(num) => <div class="h-5">{num}</div>}
-                    </For>
-                  </div>
-                  {/* Textarea */}
-                  <textarea
-                    value={fileContent()}
-                    onInput={(e) => setFileContent(e.currentTarget.value)}
-                    onScroll={handleScroll}
-                    class="flex-1 bg-transparent text-gray-300 px-3 py-3 focus:outline-none resize-none overflow-y-auto font-mono text-xs leading-5 whitespace-pre outline-none"
-                    spellcheck={false}
-                  />
-                </>
+                <CodeEditor
+                  content={fileContent()}
+                  filename={selectedFile()?.name ?? ''}
+                  onChange={setFileContent}
+                />
               }
             >
-              <div class="flex-1 flex items-center justify-center text-gray-500">
+              <div class="flex-1 h-full flex items-center justify-center text-gray-500">
                 <svg class="animate-spin h-6 w-6 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
