@@ -17,6 +17,7 @@ export function ChatTab(props: ChatTabProps) {
   const [isSending, setIsSending] = createSignal(false);
   const [errorMsg, setErrorMsg] = createSignal('');
   const [activeQuestion, setActiveQuestion] = createSignal<any | null>(null);
+  const [sessionStatus, setSessionStatus] = createSignal<string>('idle');
   
   let messagesContainerRef: HTMLDivElement | undefined;
 
@@ -92,6 +93,48 @@ export function ChatTab(props: ChatTabProps) {
     }
   };
 
+  const fetchSessionStatus = async () => {
+    const c = client();
+    const sessId = rawSessionId();
+    const directory = props.task?.absolute_project_path || props.task?.project_path;
+    if (!c || !sessId || !directory) return;
+
+    try {
+      const res = await c.session.status({
+        directory
+      });
+      if (res.data) {
+        const statusMap = res.data as Record<string, { type: string }>;
+        const status = statusMap[sessId];
+        if (status) {
+          setSessionStatus(status.type || 'idle');
+        } else {
+          setSessionStatus('idle');
+        }
+      }
+    } catch (e) {
+      console.error("Error fetching session status", e);
+    }
+  };
+
+  const handleStopSession = async (e: Event) => {
+    e.preventDefault();
+    const c = client();
+    const sessId = rawSessionId();
+    const directory = props.task?.absolute_project_path || props.task?.project_path || undefined;
+    if (!c || !sessId) return;
+
+    try {
+      await c.session.abort({
+        sessionID: sessId,
+        directory
+      }, { throwOnError: true });
+    } catch (err: any) {
+      console.error("Error stopping session", err);
+      setErrorMsg(err.message || "Failed to stop/interrupt session.");
+    }
+  };
+
   const handleSendMessage = async (e: Event) => {
     e.preventDefault();
     const text = inputText().trim();
@@ -129,6 +172,7 @@ export function ChatTab(props: ChatTabProps) {
       setErrorMsg('');
       setInputText('');
       setActiveQuestion(null);
+      setSessionStatus('idle');
     }
   });
 
@@ -142,6 +186,7 @@ export function ChatTab(props: ChatTabProps) {
       // 1. Initial fetch
       fetchMessages();
       fetchQuestions();
+      fetchSessionStatus();
 
       const applyEventToMessages = (event: any) => {
         const type = event.type;
@@ -268,6 +313,12 @@ export function ChatTab(props: ChatTabProps) {
         const type = event?.type;
         const properties = event?.properties || event?.data;
         if (!type) return;
+
+        if (type === "session.status") {
+          if (properties && properties.sessionID === sessId) {
+            setSessionStatus(properties.status?.type || 'idle');
+          }
+        }
 
         if (type === "question.asked") {
           if (properties && properties.sessionID === sessId) {
@@ -396,6 +447,18 @@ export function ChatTab(props: ChatTabProps) {
           </Show>
           Send
         </button>
+        <Show when={sessionStatus() !== 'idle'}>
+          <button 
+            type="button"
+            onClick={handleStopSession}
+            class="bg-rose-600 hover:bg-rose-500 text-white rounded-lg px-4 py-2 text-sm font-semibold transition-all active:scale-95 shadow-lg shadow-rose-500/10 flex items-center gap-1.5 shrink-0"
+          >
+            <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clip-rule="evenodd" />
+            </svg>
+            Stop
+          </button>
+        </Show>
       </form>
     </div>
   );
