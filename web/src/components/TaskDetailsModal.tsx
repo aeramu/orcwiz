@@ -136,17 +136,33 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
               </div>
               <Show when={(task.status === 'backlog' || task.status === 'failed') && !isEditing()}>
                 <div class="flex space-x-2">
-                  <button 
+                  <button
                     onClick={props.onDelete}
                     class="text-xs bg-red-900/60 hover:bg-red-800/60 text-red-200 border border-red-800/60 px-3 py-1.5 rounded transition-colors"
                   >
                     Delete
                   </button>
-                  <button 
+                  <button
                     onClick={() => setIsEditing(true)}
                     class="text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 px-3 py-1.5 rounded transition-colors"
                   >
                     Edit Task
+                  </button>
+                </div>
+              </Show>
+              <Show when={isEditing()}>
+                <div class="flex space-x-2">
+                  <button
+                    onClick={() => setIsEditing(false)}
+                    class="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1.5 rounded transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSave}
+                    class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded transition-colors shadow-md shadow-indigo-500/20"
+                  >
+                    Save Changes
                   </button>
                 </div>
               </Show>
@@ -270,19 +286,21 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
               class="bg-gray-800 border border-gray-700 rounded-xl shadow-2xl w-full h-[85vh] max-w-6xl overflow-hidden transition-all duration-300 flex flex-col" 
               onClick={e => e.stopPropagation()}
             >
-              <div class="p-6 border-b border-gray-700 flex justify-between items-start shrink-0">
-                <Show when={!isEditing()}>
-                  <h2 class="text-2xl font-bold text-gray-100 pr-8">{task.title}</h2>
-                </Show>
-                <Show when={isEditing()}>
-                  <input 
-                    type="text" 
-                    value={editTitle()}
-                    onInput={e => setEditTitle(e.currentTarget.value)}
-                    class="text-2xl font-bold text-gray-100 bg-gray-900 border border-indigo-500 rounded px-2 py-1 w-full mr-4 focus:outline-none"
-                  />
-                </Show>
-                <button 
+              <div class="p-6 border-b border-gray-700 shrink-0 flex items-start justify-between gap-4">
+                <div class="flex-1 min-w-0">
+                  <Show when={!isEditing()}>
+                    <h2 class="text-2xl font-bold text-gray-100">{task.title}</h2>
+                  </Show>
+                  <Show when={isEditing()}>
+                    <input
+                      type="text"
+                      value={editTitle()}
+                      onInput={e => setEditTitle(e.currentTarget.value)}
+                      class="text-2xl font-bold text-gray-100 bg-gray-900 border border-indigo-500 rounded px-2 py-1 w-full focus:outline-none"
+                    />
+                  </Show>
+                </div>
+                <button
                   onClick={() => { props.onClose(); setIsEditing(false); }}
                   class="text-gray-400 hover:text-gray-200 transition-colors mt-1 shrink-0"
                 >
@@ -291,6 +309,7 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
                   </svg>
                 </button>
               </div>
+
               
               <div class="flex-1 min-h-0 flex md:flex-row flex-col">
                 <div class="md:w-[42%] w-full border-r border-gray-700/60 p-6 space-y-6 overflow-y-auto h-full min-h-0">
@@ -377,31 +396,7 @@ export function TaskDetailsModal(props: TaskDetailsModalProps) {
                   </div>
                 </div>
               </div>
-              
-              <div class="p-6 border-t border-gray-700 bg-gray-800/50 flex justify-end gap-3 shrink-0">
-                <Show when={isEditing()}>
-                  <button 
-                    onClick={() => setIsEditing(false)}
-                    class="px-5 py-2 rounded-md bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors font-medium text-sm"
-                  >
-                    Cancel
-                  </button>
-                  <button 
-                    onClick={handleSave}
-                    class="px-5 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 shadow-lg shadow-indigo-500/20 transition-colors font-medium text-sm"
-                  >
-                    Save Changes
-                  </button>
-                </Show>
-                <Show when={!isEditing()}>
-                  <button 
-                    onClick={() => { props.onClose(); setIsEditing(false); }}
-                    class="px-5 py-2 rounded-md bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors font-medium text-sm"
-                  >
-                    Close
-                  </button>
-                </Show>
-              </div>
+
             </div>
           </div>
         );
