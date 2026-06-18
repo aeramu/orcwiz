@@ -133,6 +133,7 @@ function DiffViewer(props: { diffText: string; filename: string }) {
             oneDark,
             editorTheme,
             syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+            EditorView.editable.of(false),
             langCompartmentB.of(langExt ?? []),
           ],
         },
@@ -140,7 +141,6 @@ function DiffViewer(props: { diffText: string; filename: string }) {
         orientation: 'a-b',
         highlightChanges: true,
         gutter: true,
-        revertControls: 'a-to-b',
       });
       return;
     }
@@ -180,8 +180,9 @@ function UnifiedDiffViewer(props: { diffText: string; filename: string }) {
           lineNumbers(),
           drawSelection(),
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          EditorView.editable.of(false),
           ...(langExt ? [langExt] : []),
-          unifiedMergeView({ original }),
+          unifiedMergeView({ original, mergeControls: false }),
         ],
       }),
       parent: container!,
@@ -204,7 +205,7 @@ export function GitTab(props: GitTabProps) {
   const [isCommitting, setIsCommitting] = createSignal(false);
   const [isInitializing, setIsInitializing] = createSignal(false);
   const [actionInProgress, setActionInProgress] = createSignal<string | null>(null);
-  const [diffMode, setDiffMode] = createSignal<'split' | 'unified'>('split');
+  const [diffMode, setDiffMode] = createSignal<'split' | 'unified'>('unified');
 
   const projectPath = () => props.task.absolute_project_path || props.task.project_path || '';
 
@@ -684,20 +685,8 @@ export function GitTab(props: GitTabProps) {
 
               {/* View mode toggle + Context Actions */}
               <div class="flex items-center gap-2">
-                {/* Split / Unified toggle */}
+                {/* Unified / Split toggle */}
                 <div class="flex items-center bg-gray-900 border border-gray-700/60 rounded overflow-hidden text-[10px] font-semibold">
-                  <button
-                    type="button"
-                    onClick={() => setDiffMode('split')}
-                    class={`px-2.5 py-1 transition-colors ${
-                      diffMode() === 'split'
-                        ? 'bg-indigo-600 text-white'
-                        : 'text-gray-400 hover:text-gray-200'
-                    }`}
-                    title="Side-by-side diff"
-                  >
-                    Split
-                  </button>
                   <button
                     type="button"
                     onClick={() => setDiffMode('unified')}
@@ -709,6 +698,18 @@ export function GitTab(props: GitTabProps) {
                     title="Inline unified diff"
                   >
                     Unified
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDiffMode('split')}
+                    class={`px-2.5 py-1 transition-colors ${
+                      diffMode() === 'split'
+                        ? 'bg-indigo-600 text-white'
+                        : 'text-gray-400 hover:text-gray-200'
+                    }`}
+                    title="Side-by-side diff"
+                  >
+                    Split
                   </button>
                 </div>
                 <Show when={!selectedFile()?.staged && selectedFile()?.status !== 'untracked'}>
